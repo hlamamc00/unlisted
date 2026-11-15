@@ -1,0 +1,101 @@
+// Unlisted data model
+//
+// A recruiter (User) owns roles. Each Role holds the job description, the brief
+// read from it, and what the recruiter has taught it (skip rules, answers).
+// People are found from public sources (GitHub first) and stored once; a Match
+// links a person to a role with a score, the reasons behind it and the
+// recruiter's decision. OptOut lists people who asked never to be included.
+
+generator client {
+  provider      = "prisma-client-js"
+  // "native" for local dev; rhel-openssl-3.0.x is what Netlify's functions run.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  company      String?
+  createdAt    DateTime @default(now())
+  roles        Role[]
+}
+
+model Role {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String
+  jdText       String    @db.Text
+  /// The structured brief (see src/lib/brief.ts: Brief).
+  brief        Json
+  /// Answers to the questions job descriptions leave out: { avoid, like, pay }.
+  context      Json      @default("{}")
+  /// Learned from skips: { excludedLocations: string[] }.
+  rules        Json      @default("{}")
+  /// Which GitHub result pages have been read, per query, so "Find more" moves on.
+  searchState  Json      @default("{}")
+  lastSearchAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  matches      Match[]
+
+  @@index([userId])
+}
+
+model Person {
+  id          String   @id @default(cuid())
+  githubLogin String   @unique
+  name        String?
+  avatarUrl   String?
+  location    String?
+  bio         String?
+  company     String?
+  blog        String?
+  email       String?
+  hireable    Boolean?
+  followers   Int      @default(0)
+  /// True when a LinkedIn account is linked from the GitHub profile.
+  hasLinkedIn Boolean  @default(false)
+  /// { [language]: number of owned repositories }
+  languages   Json     @default("{}")
+  /// Top owned repositories: [{ name, description, stars, language, topics, pushedAt, url }]
+  topRepos    Json     @default("[]")
+  totalStars  Int      @default(0)
+  lastPushAt  DateTime?
+  fetchedAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+  matches     Match[]
+}
+
+model Match {
+  id         String   @id @default(cuid())
+  roleId     String
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  personId   String
+  person     Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  score      Int
+  /// How the person measures against each line of the brief (see src/lib/score.ts: Check).
+  checks     Json     @default("[]")
+  /// review | approved | skipped
+  status     String   @default("review")
+  skipReason String?
+  draft      String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([roleId, personId])
+  @@index([roleId, status])
+}
+
+model OptOut {
+  id          String   @id @default(cuid())
+  githubLogin String   @unique
+  createdAt   DateTime @default(now())
+}
