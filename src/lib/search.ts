@@ -7,11 +7,13 @@ import { scorePerson, type ScorablePerson } from "./score";
 
 type Query = { key: string; kind: "repos" | "users"; q: string };
 /** Pages read per query (-1 when a query has no more results) and people found but not yet looked at. */
-type SearchState = { pages?: Record<string, number>; pending?: string[] };
+type SearchState = { pages?: Record<string, number>; pending?: string[]; v?: number };
 
-const BATCH = 8; // people looked at per run, so a run stays well inside a web request's time limit
+const BATCH = 12; // people looked at per run, so a run stays well inside a web request's time limit
 const MAX_SEARCHES = 3; // GitHub searches per run
-const MIN_SCORE = 45; // below this a person stays out of the queue
+export const MIN_SCORE = 60; // below this a person stays out of the queue
+/** Bump when scoring changes: each role re-scores its candidates the next time it's opened. */
+export const SCORE_VERSION = 2;
 const FRESH_MS = 7 * 86_400_000; // reuse a fetched profile for a week
 const json = (v: unknown) => v as Prisma.InputJsonValue;
 
@@ -23,15 +25,17 @@ export function buildQueries(brief: Brief): Query[] {
   const langQ = lang ? ` language:"${lang}"` : "";
   const since = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
   const phrase = (t: string) => (t.includes(" ") ? `"${t}"` : t);
-  const queries: Query[] = brief.searchTerms
+  const repoQueries: Query[] = brief.searchTerms
     .slice(0, 3)
     .map((t) => ({ key: `r:${t.toLowerCase()}`, kind: "repos", q: `${phrase(t)}${langQ} stars:>3 pushed:>${since}` }));
+  const userQueries: Query[] = [];
+  const cities = brief.locations.map((l) => l.split(",")[0].trim()).filter(Boolean).slice(0, 2);
   if (lang) {
-    const cities = brief.locations.map((l) => l.split(",")[0].trim()).filter(Boolean).slice(0, 2);
-    for (const c of cities) queries.push({ key: `u:${c.toLowerCase()}`, kind: "users", q: `language:"${lang}" location:"${c}" repos:>3 followers:>5` });
-    if (!cities.length || brief.remoteOk) queries.push({ key: "u:any", kind: "users", q: `language:"${lang}" repos:>5 followers:>30` });
+    for (const c of cities) userQueries.push({ key: `u:${c.toLowerCase()}`, kind: "users", q: `language:"${lang}" location:"${c}" repos:>3 followers:>5` });
+    if (!cities.length || brief.remoteOk) userQueries.push({ key: "u:any", kind: "users", q: `language:"${lang}" repos:>5 followers:>30` });
   }
-  return queries;
+  // When the role is tied to cities, people searched by city come first: they're the ones who can take it.
+  return cities.length && !brief.remoteOk ? [...userQueries, ...repoQueries] : [...repoQueries, ...userQueries];
 }
 
 export function toScorable(p: Person): ScorablePerson & { followers: number; hireable: boolean | null } {
@@ -99,7 +103,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
 
   let added = 0, looked = 0;
   const leftover: string[] = [];
-  await mapLimit(batch, 4, async (login) => {
+  await mapLimit(batch, 6, async (login) => {
     let person = cached.get(login.toLowerCase());
     if (!person) {
       let profile: Profile | null;
@@ -113,9 +117,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
       person = await db.person.upsert({ where: { githubLogin: profile.githubLogin }, create: data, update: data });
     }
     looked++;
-    const { score, checks } = scorePerson(toScorable(person), brief);
-    const excluded = rules.excludedLocations?.some((x) => person.location?.toLowerCase().includes(x.toLowerCase()));
-    const status = score >= MIN_SCORE && !excluded ? "review" : "filtered";
+    const { score, checks, status } = assess(person, brief, rules);
     await db.match.upsert({
       where: { roleId_personId: { roleId, personId: person.id } },
       create: { roleId, personId: person.id, score, checks: json(checks), status },
@@ -126,7 +128,37 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
 
   await db.role.update({
     where: { id: roleId },
-    data: { searchState: json({ pages, pending: [...leftover, ...pending] }), lastSearchAt: new Date() },
+    data: { searchState: json({ pages, pending: [...leftover, ...pending], v: SCORE_VERSION }), lastSearchAt: new Date() },
   });
   return { added, looked, message };
+}
+
+/** Score a person for a role and decide whether they belong in its queue. */
+function assess(person: Person, brief: Brief, rules: RoleRules) {
+  const { score, checks, outOfArea } = scorePerson(toScorable(person), brief);
+  const excluded = rules.excludedLocations?.some((x) => person.location?.toLowerCase().includes(x.toLowerCase()));
+  return { score, checks, status: score >= MIN_SCORE && !outOfArea && !excluded ? "review" : "filtered" };
+}
+
+/** Re-scores a role's undecided candidates when scoring or the role's rules have changed. Uses stored data only. */
+export async function rescoreIfStale(roleId: string, userId: string) {
+  const role = await db.role.findFirst({ where: { id: roleId, userId }, select: { brief: true, rules: true, searchState: true } });
+  const state = (role?.searchState ?? {}) as SearchState;
+  if (!role || state.v === SCORE_VERSION) return;
+  const brief = role.brief as unknown as Brief;
+  const rules = (role.rules ?? {}) as RoleRules;
+  const matches = await db.match.findMany({ where: { roleId, status: { in: ["review", "filtered"] } }, include: { person: true } });
+  await db.$transaction([
+    ...matches.map((m) => {
+      const { score, checks, status } = assess(m.person, brief, rules);
+      return db.match.update({ where: { id: m.id }, data: { score, checks: json(checks), status } });
+    }),
+    db.role.update({ where: { id: roleId }, data: { searchState: json({ ...state, v: SCORE_VERSION }) } }),
+  ]);
+}
+
+/** Makes the role re-score its candidates the next time it's opened. */
+export async function markForRescore(roleId: string) {
+  const role = await db.role.findUnique({ where: { id: roleId }, select: { searchState: true } });
+  if (role) await db.role.update({ where: { id: roleId }, data: { searchState: json({ ...((role.searchState ?? {}) as SearchState), v: 0 }) } });
 }

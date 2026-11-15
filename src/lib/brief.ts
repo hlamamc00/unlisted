@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const CriterionSchema = z.object({
-  label: z.string().describe("Short requirement as a recruiter would say it, e.g. 'Rust' or 'Low-latency trading systems'."),
+  label: z.string().describe("The requirement in 1 to 3 words, e.g. 'Rust', 'Low latency', 'Trading systems', '6+ years'."),
   importance: z.enum(["must", "nice"]),
   signals: z
     .array(z.string())

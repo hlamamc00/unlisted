@@ -14,6 +14,7 @@ const anthropic = () => (client ??= new Anthropic());
 
 const BRIEF_SYSTEM = `You turn a job description, or a few lines a recruiter wrote, into a search brief for finding candidates through their public work: GitHub repositories, papers and talks.
 
+- label: 1 to 3 words a busy recruiter can scan, e.g. "Rust", "Low latency", "Trading systems", "6+ years".
 - criteria: the requirements that matter for finding people. Mark "must" only for what is genuinely required. Job descriptions list more requirements than hiring managers need, so prefer "nice" when unsure. Leave out benefits, perks, the company description and legal text.
 - Never include criteria about age, sex, race, religion, national origin, disability or other protected characteristics, or proxies for them such as graduation year.
 - signals: lowercase words and short phrases that would appear in the repository names, descriptions, topics or bios of someone who meets the requirement.

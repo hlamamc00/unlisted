@@ -9,7 +9,7 @@ import { BriefSchema, readBriefLocally, type Brief, type RoleContext, type RoleR
 import { draftMessageWithClaude, hasClaude, readBriefWithClaude } from "@/lib/claude";
 import { fileToText } from "@/lib/jd-file";
 import { evidenceFor } from "@/lib/score";
-import { runSearch, toScorable, type SearchResult } from "@/lib/search";
+import { markForRescore, runSearch, toScorable, type SearchResult } from "@/lib/search";
 
 const MAX_JD_CHARS = 30_000;
 const json = (v: unknown) => v as Prisma.InputJsonValue;
@@ -88,10 +88,7 @@ export async function decide(matchId: string, decision: Decision, reason?: SkipR
     const rules = (match.role.rules ?? {}) as RoleRules;
     const excludedLocations = [...new Set([...(rules.excludedLocations ?? []), city])];
     await db.role.update({ where: { id: match.roleId }, data: { rules: json({ ...rules, excludedLocations }) } });
-    await db.match.updateMany({
-      where: { roleId: match.roleId, status: "review", person: { location: { contains: city, mode: "insensitive" } } },
-      data: { status: "filtered" },
-    });
+    await markForRescore(match.roleId);
     learned = `Learned: no more candidates in ${city}`;
   }
   revalidatePath(`/app/roles/${match.roleId}`);
@@ -105,10 +102,7 @@ export async function removeLocationRule(roleId: string, city: string) {
   if (!role) throw new Error("Role not found");
   const rules = (role.rules ?? {}) as RoleRules;
   await db.role.update({ where: { id: roleId }, data: { rules: json({ ...rules, excludedLocations: (rules.excludedLocations ?? []).filter((c) => c !== city) }) } });
-  await db.match.updateMany({
-    where: { roleId, status: "filtered", score: { gte: 45 }, person: { location: { contains: city, mode: "insensitive" } } },
-    data: { status: "review" },
-  });
+  await markForRescore(roleId);
   revalidatePath(`/app/roles/${roleId}`);
 }
 

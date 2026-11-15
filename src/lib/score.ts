@@ -16,55 +16,101 @@ export type ScorablePerson = {
   languages: Record<string, number>; topRepos: Repo[]; totalStars: number; lastPushAt: Date | null;
 };
 
+export type Score = { score: number; checks: Check[]; outOfArea: boolean };
+
 const DAY = 86_400_000;
 const city = (loc: string) => loc.split(",")[0].trim().toLowerCase();
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Whole-word (or whole-phrase) match, so "ui" doesn't match "build". */
+const hasPhrase = (text: string, phrase: string) =>
+  new RegExp(`(^|[^a-z0-9])${escapeRe(phrase.toLowerCase())}($|[^a-z0-9])`).test(text);
 
-export function scorePerson(p: ScorablePerson, brief: Brief): { score: number; checks: Check[] } {
+export const fitLabel = (score: number) => (score >= 85 ? "Strong match" : score >= 70 ? "Good match" : "Possible match");
+export const fitLevel = (score: number) => (score >= 85 ? "strong" : score >= 70 ? "good" : "possible");
+
+// ---------- where people are ----------
+
+// Georgia is left out on purpose: it's also a country.
+const STATES = ["alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "hawaii",
+  "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan",
+  "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york",
+  "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota",
+  "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming", "district of columbia"];
+// Two-letter codes that are rarely used for another country or region (IN, DE, AL, AR, ID, ME, MT and NE are left out).
+const CODES = new Set("AK AZ CA CO CT DC FL GA HI IA IL KS KY LA MA MD MI MN MO MS NC ND NH NJ NM NV NY OH OK OR PA RI SC SD TN TX UT VA VT WA WI WV WY".split(" "));
+const US_CITIES = ["san francisco", "bay area", "silicon valley", "seattle", "boston", "chicago", "austin", "los angeles", "nyc",
+  "brooklyn", "manhattan", "denver", "atlanta", "miami", "dallas", "houston", "philadelphia", "pittsburgh", "san diego", "san jose",
+  "minneapolis", "raleigh", "salt lake city", "phoenix", "detroit"];
+
+/** True when a profile location is in the US, false when it's clearly elsewhere, null when there's none. */
+export function inUS(location: string | null): boolean | null {
+  if (!location?.trim()) return null;
+  const l = location.toLowerCase();
+  if (/(^|[^a-z])(usa|u\.s\.a?\.?|united states)([^a-z]|$)/.test(l)) return true;
+  if (STATES.some((s) => hasPhrase(l, s))) return true;
+  if ([...location.matchAll(/,\s*([A-Z]{2})\b/g)].some((m) => CODES.has(m[1]))) return true;
+  return US_CITIES.some((c) => hasPhrase(l, c));
+}
+
+function locationCheck(p: ScorablePerson, brief: Brief): Check {
+  if (!p.location?.trim()) return { label: "Location", importance: "location", status: "unknown", detail: "Not on their profile" };
+  const where = p.location.toLowerCase();
+  const hit = brief.locations.find((l) => where.includes(city(l)));
+  if (hit) return { label: p.location, importance: "location", status: "yes" };
+  if (inUS(p.location) === false) return { label: p.location, importance: "location", status: "no", detail: "Outside the US" };
+  if (brief.remoteOk || !brief.locations.length) return { label: p.location, importance: "location", status: "yes", detail: "In the US" };
+  return { label: p.location, importance: "location", status: "no", detail: "Outside your locations" };
+}
+
+// ---------- the score ----------
+
+export function scorePerson(p: ScorablePerson, brief: Brief): Score {
   const repoText = (r: Repo) => [r.name.replace(/[-_.]/g, " "), r.description ?? "", ...r.topics].join(" ").toLowerCase();
   const corpus = [p.bio ?? "", p.company ?? "", ...p.topRepos.map(repoText)].join(" ").toLowerCase();
-  const langs = Object.fromEntries(Object.entries(p.languages).map(([l, n]) => [l.toLowerCase(), n]));
-  const checks: Check[] = [];
-  let got = 0, max = 0, mustsWithSignals = 0, mustsMet = 0;
+  const ranked = Object.entries(p.languages).sort((a, b) => b[1] - a[1]);
+  const total = ranked.reduce((sum, [, n]) => sum + n, 0);
+  const mainLanguages = ranked.slice(0, 2).map(([l]) => l).join(" and ");
+  // A language counts when it's one of their top two, or at least a quarter of their repositories.
+  const isMain = (lang: string) => {
+    const i = ranked.findIndex(([l]) => l.toLowerCase() === lang.toLowerCase());
+    return i >= 0 && (i < 2 || ranked[i][1] / total >= 0.25);
+  };
+
+  const loc = locationCheck(p, brief);
+  const checks: Check[] = [loc];
+  let got = loc.status === "yes" && brief.locations.length ? 1.5 : 0;
+  let max = got;
+  let mustsChecked = 0, mustsMet = 0;
 
   for (const c of brief.criteria) {
     if (!c.signals.length && !c.languages.length) {
       checks.push({ label: c.label, importance: c.importance, status: "unknown", detail: "Ask in your first conversation" });
       continue;
     }
-    const lang = c.languages.find((l) => langs[l.toLowerCase()]);
-    const signal = c.signals.find((s) => s && corpus.includes(s.toLowerCase()));
-    const repo = signal ? p.topRepos.find((r) => repoText(r).includes(signal.toLowerCase())) : undefined;
-    const yes = Boolean(lang || signal);
-    const detail = lang
-      ? `${langs[lang.toLowerCase()]} ${lang} ${langs[lang.toLowerCase()] === 1 ? "repository" : "repositories"}`
-      : repo ? `In ${repo.name}` : signal ? `Mentions "${signal}"` : undefined;
+    const aboutLanguage = c.languages.some((l) => c.label.toLowerCase().includes(l.toLowerCase())) || !c.signals.length;
+    let yes: boolean, detail: string | undefined;
+    if (aboutLanguage) {
+      yes = c.languages.some(isMain);
+      detail = yes ? "One of their main languages" : mainLanguages ? `Mainly writes ${mainLanguages}` : "No public code yet";
+    } else {
+      const signal = c.signals.find((s) => s.trim() && hasPhrase(corpus, s));
+      const repo = signal ? p.topRepos.find((r) => hasPhrase(repoText(r), signal)) : undefined;
+      yes = Boolean(signal);
+      detail = repo ? `In ${repo.name}` : signal ? `Mentions "${signal}"` : undefined;
+    }
     checks.push({ label: c.label, importance: c.importance, status: yes ? "yes" : "no", detail });
     const w = c.importance === "must" ? 3 : 1;
     max += w;
     if (yes) got += w;
-    if (c.importance === "must") { mustsWithSignals++; if (yes) mustsMet++; }
-  }
-
-  if (brief.locations.length) {
-    const where = p.location?.toLowerCase() ?? "";
-    const hit = brief.locations.find((l) => where && where.includes(city(l)));
-    checks.unshift({
-      label: hit ?? (p.location || "Location not given"),
-      importance: "location",
-      status: hit ? "yes" : brief.remoteOk || !p.location ? "unknown" : "no",
-      detail: hit ? undefined : brief.remoteOk ? "Remote is fine for this role" : p.location ? "Outside your locations" : "Not on their profile",
-    });
-    // A miss only counts against people when the role can't be remote and their location is known.
-    if (!brief.remoteOk && p.location) { max += 1.5; if (hit) got += 1.5; }
-    else if (hit) { max += 1.5; got += 1.5; }
+    if (c.importance === "must") { mustsChecked++; if (yes) mustsMet++; }
   }
 
   // Strength of the public work, a small bonus: stars on their own projects and recent activity.
   const strength = Math.min(6, Math.log10(p.totalStars + 1) * 2) + (p.lastPushAt && Date.now() - p.lastPushAt.getTime() < 90 * DAY ? 3 : 0);
   let score = (max ? 40 + 50 * (got / max) : 50) + strength;
-  // Missing every must-have that public work can show means it isn't a match.
-  if (mustsWithSignals && !mustsMet) score = Math.min(score, 30);
-  return { score: Math.round(Math.min(99, score)), checks };
+  // Meeting fewer than half of the must-haves public work can show means it isn't a match.
+  if (mustsChecked && mustsMet * 2 < mustsChecked) score = Math.min(score, 40);
+  return { score: Math.round(Math.min(99, score)), checks, outOfArea: loc.status === "no" };
 }
 
 /** Plain-language lines about someone's public work, for the review screen and message drafts. */

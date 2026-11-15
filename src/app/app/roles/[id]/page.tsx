@@ -3,7 +3,7 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import type { Brief, RoleContext, RoleRules } from "@/lib/brief";
 import { evidenceFor, type Check } from "@/lib/score";
-import { toScorable } from "@/lib/search";
+import { rescoreIfStale, toScorable } from "@/lib/search";
 import { SiteHeader } from "@/components/site-header";
 import { ReviewQueue, type Item } from "./review-queue";
 
@@ -15,6 +15,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 export default async function RolePage({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
   const { id } = await params;
+  await rescoreIfStale(id, user.id);
   const role = await db.role.findFirst({
     where: { id, userId: user.id },
     include: { matches: { where: { status: { in: ["review", "approved", "skipped"] } }, include: { person: true }, orderBy: { score: "desc" } } },
