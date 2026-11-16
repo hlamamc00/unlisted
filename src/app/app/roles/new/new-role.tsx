@@ -2,7 +2,7 @@
 
 import { useActionState, useState, useTransition } from "react";
 import type { Brief } from "@/lib/brief";
-import { createRole, readJobDescription, type ReadResult } from "../../actions";
+import { createRole, readJobDescription, type ReadResult, type RoleExtras } from "../../actions";
 
 const SAMPLE = `Senior Rust Engineer – Trading Systems
 Northfold Markets · Chicago, IL · 3 days a week in the office
@@ -27,10 +27,11 @@ export function NewRole() {
   const [text, setText] = useState("");
   return (
     <>
-      <form action={readAction} className="panel" style={{ display: "grid", gap: 12 }}>
+      <form action={readAction} className="panel form-grid">
+        <div className="step-title"><span className="step-n">1</span> The job description</div>
         <div className="row">
           <label className="btn">
-            Upload job description
+            Upload a file
             <input type="file" name="file" accept=".pdf,.docx,.txt,.md,text/plain,application/pdf" hidden
               onChange={(e) => e.currentTarget.form?.requestSubmit()} />
           </label>
@@ -52,26 +53,24 @@ export function NewRole() {
 
 function BriefEditor({ initial, jdText, usedClaude }: { initial: Brief; jdText: string; usedClaude: boolean }) {
   const [brief, setBrief] = useState<Brief>(initial);
-  const [ctx, setCtx] = useState({ avoid: "", like: "", pay: initial.payRange ?? "" });
+  const [extras, setExtras] = useState<Required<RoleExtras>>({ pay: initial.payRange ?? "", like: "", target: "", avoid: "" });
   const [saving, startSaving] = useTransition();
   const toggle = (i: number) => setBrief((b) => ({ ...b, criteria: b.criteria.map((c, j) => (j === i ? { ...c, importance: c.importance === "must" ? "nice" : "must" } : c)) }));
   const remove = (i: number) => setBrief((b) => ({ ...b, criteria: b.criteria.filter((_, j) => j !== i) }));
+  const set = (k: keyof RoleExtras) => (e: React.ChangeEvent<HTMLInputElement>) => setExtras({ ...extras, [k]: e.target.value });
 
   return (
-    <section className="panel" style={{ display: "grid", gap: 16 }} aria-label="Brief">
-      <div>
-        <div className="label">What we took from it {usedClaude ? "(read by Claude)" : "(keyword reader)"}</div>
-        <input className="input" style={{ marginTop: 6, fontWeight: 600 }} value={brief.title} aria-label="Role title"
-          onChange={(e) => setBrief({ ...brief, title: e.target.value })} />
-      </div>
+    <section className="panel form-grid" aria-label="Brief">
+      <div className="step-title"><span className="step-n">2</span> Check what we understood <span className="hint">{usedClaude ? "(read by Claude)" : "(keyword reader)"}</span></div>
+      <input className="input" style={{ fontWeight: 600 }} value={brief.title} aria-label="Role title"
+        onChange={(e) => setBrief({ ...brief, title: e.target.value })} />
       <div style={{ display: "grid", gap: 8 }}>
         <p className="hint">Filled means must-have, dashed means nice to have. Click one to switch it: most job descriptions ask for more must-haves than the hiring manager really needs.</p>
         <div className="chips">
           {brief.criteria.map((c, i) => (
             <span key={c.label + i} className={`chip ${c.importance}`}>
-              <button type="button" onClick={() => toggle(i)} style={{ background: "none", border: 0, color: "inherit", cursor: "pointer", padding: 0 }}
-                title="Switch between must-have and nice to have">{c.label}</button>
-              <button type="button" onClick={() => remove(i)} aria-label={`Remove ${c.label}`} style={{ background: "none", border: 0, color: "inherit", opacity: .6, cursor: "pointer" }}>×</button>
+              <button type="button" className="chip-text" onClick={() => toggle(i)} title="Switch between must-have and nice to have">{c.label}</button>
+              <button type="button" className="chip-x" onClick={() => remove(i)} aria-label={`Remove ${c.label}`}>×</button>
             </span>
           ))}
           {brief.locations.map((l) => <span key={l} className="chip">{l}</span>)}
@@ -80,16 +79,17 @@ function BriefEditor({ initial, jdText, usedClaude }: { initial: Brief; jdText: 
         {brief.leftOut && <p className="hint">Left out: {brief.leftOut}.</p>}
         {brief.workAuthorization && <p className="notice">It mentions work authorization (&ldquo;{brief.workAuthorization}&rdquo;). Unlisted never guesses anyone&apos;s visa status, so ask about it on your first call.</p>}
       </div>
-      <div style={{ display: "grid", gap: 10 }}>
-        <div className="label">What job descriptions don&apos;t tell us</div>
-        <p className="hint">Saved with the role and shown above its candidates. The pay range goes into your messages. Searching by company and finding people like someone you name come in a later update.</p>
-        <label className="field">Companies to target or avoid<input value={ctx.avoid} onChange={(e) => setCtx({ ...ctx, avoid: e.target.value })} placeholder="e.g. target ex-exchange engineers, avoid the client's competitors" /></label>
-        <label className="field">Someone like the person you want<input value={ctx.like} onChange={(e) => setCtx({ ...ctx, like: e.target.value })} placeholder="A GitHub, paper or personal site link" /></label>
-        <label className="field">Pay range<input value={ctx.pay} onChange={(e) => setCtx({ ...ctx, pay: e.target.value })} placeholder="e.g. $200k–$250k" /></label>
+
+      <div className="step-title"><span className="step-n">3</span> What job descriptions don&apos;t say <span className="hint">(optional)</span></div>
+      <div className="two-col">
+        <label className="field">Pay range<input value={extras.pay} onChange={set("pay")} placeholder="e.g. $200k–$250k" /><span className="hint">Goes into your messages.</span></label>
+        <label className="field">Someone like the person you want<input value={extras.like} onChange={set("like")} placeholder="A GitHub profile link" /><span className="hint">The agent looks for people with similar work.</span></label>
+        <label className="field">Companies to look in<input value={extras.target} onChange={set("target")} placeholder="Company names, separated by commas" /><span className="hint">The agent searches these first.</span></label>
+        <label className="field">Companies to avoid<input value={extras.avoid} onChange={set("avoid")} placeholder="Company names, separated by commas" /><span className="hint">People working there are never shown.</span></label>
       </div>
       <div className="row">
         <button className="btn primary" disabled={saving || !brief.criteria.length}
-          onClick={() => startSaving(() => createRole({ jdText, brief, context: ctx }))}>
+          onClick={() => startSaving(() => createRole({ jdText, brief, extras }))}>
           {saving ? "Creating the role and searching…" : "Create role and find candidates"}
         </button>
         {!brief.criteria.length && <span className="hint">Add at least one requirement to the job description first.</span>}

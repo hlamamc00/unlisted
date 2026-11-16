@@ -27,10 +27,14 @@ export const BriefSchema = z.object({
 export type Brief = z.infer<typeof BriefSchema>;
 export type Criterion = z.infer<typeof CriterionSchema>;
 
-/** Answers to what job descriptions don't say. */
-export type RoleContext = { avoid?: string; like?: string; pay?: string };
-/** What the role has learned from the recruiter's skips. */
-export type RoleRules = { excludedLocations?: string[] };
+/** Answers to what job descriptions don't say: companies to look in or stay away from, an example person, the pay range. */
+export type RoleContext = { target?: string; avoid?: string; like?: string; pay?: string };
+/** Who must not be shown: locations learned from the recruiter's skips, and employers they named. */
+export type RoleRules = { excludedLocations?: string[]; avoidCompanies?: string[] };
+
+/** "Acme, Globex Inc." -> ["Acme", "Globex Inc."] */
+export const splitList = (text: string | undefined | null) =>
+  [...new Set((text ?? "").split(/[,;\n]/).map((x) => x.trim()).filter(Boolean))].slice(0, 12);
 
 // ---------- keyword fallback ----------
 
@@ -67,6 +71,25 @@ const SECTION: [RegExp, "must" | "nice" | "skip" | "role"][] = [
   [/^(the role|about the role|responsibilities|what you('|’)ll do|the team)/i, "role"],
 ];
 const FLUFF = /equal opportunit|discriminat|holiday|\bpto\b|401\(k\)|medical|dental|gym|lunch|wellbeing|perks|inclusive/i;
+
+/** "Chicago, IL, New York, NY" -> ["Chicago, IL", "New York, NY"]: a two-letter state joins the city before it. */
+export function parseLocations(text: string): string[] {
+  const out: string[] = [];
+  for (const part of text.split(/[,;\n]/).map((p) => p.trim()).filter(Boolean)) {
+    const last = out[out.length - 1];
+    if (/^[A-Za-z]{2}$/.test(part) && last && !/, [A-Z]{2}$/.test(last)) out[out.length - 1] = `${last}, ${part.toUpperCase()}`;
+    else out.push(part);
+  }
+  return [...new Set(out)].slice(0, 6);
+}
+
+/** A requirement a recruiter typed, e.g. "Kubernetes" or "Go": what to look for in people's work. */
+export function criterionFromLabel(label: string, importance: "must" | "nice"): Criterion {
+  const clean = label.trim().slice(0, 60);
+  const languages = LANGUAGES.filter(([re]) => re.test(clean)).map(([, name]) => name);
+  const domain = DOMAINS.find((d) => d.re.test(clean));
+  return { label: clean, importance, signals: [...new Set([clean.toLowerCase(), ...(domain?.signals ?? [])])], languages };
+}
 
 /** A rough brief from keywords, used when Claude isn't configured or can't be reached. */
 export function readBriefLocally(text: string): Brief {

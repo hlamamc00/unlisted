@@ -10,7 +10,7 @@ export default async function LoginPage() {
   return (
     <>
       <SiteHeader />
-      <main className="wrap"><AuthForm mode="login" /></main>
+      <main className="wrap public"><AuthForm mode="login" /></main>
     </>
   );
 }

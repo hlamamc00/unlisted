@@ -15,6 +15,8 @@ How to work:
 - Before adding someone from GitHub, look at them with look_at_people (up to 6 at a time). Profiles from search_linkedin already include what you need.
 - Add only people who genuinely fit, with add_candidates. For each, write why they fit in one or two sentences, and an opening line the recruiter could start a message with. Cite evidence exactly as the tools showed it: repository names, job titles, companies or skills. Never invent or embellish details; anything you can't cite, leave out.
 - If an add is rejected, read the reason and adjust; don't retry the same thing.
+- If the recruiter named companies to target, look there first (search_linkedin takes a companies list). People at companies to avoid can't be added. If an ideal example is given, look for people whose work resembles it.
+- Hiring manager feedback tells you what the person making the decision wants: find more people like the ones they want to talk to.
 - When a search finds little, change approach: other search terms, related skills, nearby areas. If the brief itself seems too narrow (for example the city has very few people), ask the recruiter with ask_recruiter rather than assuming. Ask at most two questions, only when the answer would change who you look for, and never re-ask something already answered.
 - Never use or guess anyone's age, gender, race, religion, national origin, disability or visa status, and never use graduation years or account age as a stand-in for experience.
 - Stop when you've added about 8 strong people, when searches stop finding new people, or when a tool says time is up. Quality matters more than quantity.
@@ -67,6 +69,7 @@ export async function runAgent({ site, runId, token }: { site: string; runId: st
         cities: z.array(z.string()).max(4).describe("Cities to search in, e.g. ['Chicago']; ignored when remote is true"),
         remote: z.boolean().describe("true to search the whole US"),
         boost: z.array(z.string()).max(8).optional().describe("Skills that make someone a better match, e.g. ['low latency', 'trading']"),
+        companies: z.array(z.string()).max(8).optional().describe("Only people currently at these companies, e.g. the recruiter's target companies"),
       }),
       run: (input) => call("search_linkedin", input),
     }),

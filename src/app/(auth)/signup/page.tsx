@@ -10,7 +10,7 @@ export default async function SignupPage() {
   return (
     <>
       <SiteHeader />
-      <main className="wrap"><AuthForm mode="signup" /></main>
+      <main className="wrap public"><AuthForm mode="signup" /></main>
     </>
   );
 }

@@ -24,6 +24,10 @@ model User {
   passwordHash String
   name         String
   company      String?
+  /// A link where candidates can book a call (Calendly, Cal.com, Google Calendar...), offered in messages.
+  schedulingUrl  String?
+  /// Business postal address, added to the footer of emails Unlisted sends for this recruiter.
+  mailingAddress String?
   createdAt    DateTime @default(now())
   roles        Role[]
 }
@@ -36,9 +40,9 @@ model Role {
   jdText       String    @db.Text
   /// The structured brief (see src/lib/brief.ts: Brief).
   brief        Json
-  /// Answers to the questions job descriptions leave out: { avoid, like, pay }.
+  /// Answers to the questions job descriptions leave out: { target, avoid, like, pay }.
   context      Json      @default("{}")
-  /// Learned from skips: { excludedLocations: string[] }.
+  /// What must not appear: { excludedLocations: string[] (learned from skips), avoidCompanies: string[] }.
   rules        Json      @default("{}")
   /// Which GitHub result pages have been read, per query, so "Find more" moves on.
   searchState  Json      @default("{}")
@@ -47,6 +51,9 @@ model Role {
   nightly      Boolean   @default(false)
   /// Questions the agent asked: [{ id, text, change, status: open | yes | no, askedAt }]
   questions    Json      @default("[]")
+  /// Lets a hiring manager review the shortlist without an account, until shareExpiresAt.
+  shareToken     String?   @unique
+  shareExpiresAt DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   matches      Match[]
@@ -105,15 +112,39 @@ model Match {
   status     String   @default("review")
   skipReason String?
   draft      String?  @db.Text
-  /// search | agent
+  /// search | agent | pool (found earlier, for another role) | you (added by the recruiter)
   foundBy    String   @default("search")
   /// The agent's note: { why, opener, evidence: string[] }
   note       Json?
+  /// For approved people (see src/lib/pipeline.ts): new | contacted | replied | interviewing | offer | hired | closed
+  stage       String    @default("new")
+  contactedAt DateTime?
+  /// The recruiter's private notes
+  notes       String?   @db.Text
+  /// Hiring manager feedback from the shared shortlist: [{ by, verdict: up | down, comment, at }]
+  feedback    Json      @default("[]")
+  messages    Message[]
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   @@unique([roleId, personId])
   @@index([roleId, status])
+}
+
+/// A message to a candidate: emailed by Unlisted, or sent by the recruiter themselves and logged.
+model Message {
+  id      String   @id @default(cuid())
+  matchId String
+  match   Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  /// first | followup
+  kind    String   @default("first")
+  /// email (sent by Unlisted) | manual (the recruiter sent it themselves)
+  channel String
+  subject String?
+  body    String   @db.Text
+  sentAt  DateTime @default(now())
+
+  @@index([matchId])
 }
 
 model OptOut {

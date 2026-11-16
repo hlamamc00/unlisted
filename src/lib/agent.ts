@@ -1,19 +1,18 @@
 import "server-only";
 import type { Person, Prisma } from "@prisma/client";
 import { db } from "./db";
-import type { Brief, RoleContext, RoleRules } from "./brief";
+import { splitList, type Brief, type RoleContext, type RoleRules } from "./brief";
 import { hasClaude } from "./claude";
-import { GitHubError, fetchProfile, searchRepos, searchUsers, type Repo } from "./github";
+import { sendEmail } from "./email";
+import { GitHubError, searchRepos, searchUsers, type Repo } from "./github";
 import { PdlError, hasPdl, searchLinkedIn, type Role } from "./pdl";
 import { fitLabel, shortLocation } from "./score";
-import { assess, markForRescore, savePerson, toScorable } from "./search";
+import { POSSIBLE, assess, loadGithubPerson, resetSearch, savePerson, toScorable } from "./search";
 import { agentToken } from "@/agent/token";
 
 /** What one run may use. The agent is told these and every tool enforces them. */
 export const LIMITS = { toolCalls: 30, lookups: 30, githubSearches: 8, pdlProfiles: 20, adds: 10, minutes: 12, manualRunsPerDay: 6 };
-const POSSIBLE = 45; // the agent may add someone the rules rate this high or better, with its reasons
 const json = (v: unknown) => v as Prisma.InputJsonValue;
-const FRESH_MS = 7 * 86_400_000;
 
 export type Change =
   | { type: "allow_remote" }
@@ -22,6 +21,8 @@ export type Change =
   | { type: "add_requirement"; label: string; signals: string[]; languages: string[] };
 export type Question = { id: string; text: string; change: Change; status: "open" | "yes" | "no"; askedAt: string };
 export type Note = { why: string; opener: string; evidence: string[] };
+/** What a hiring manager said about a candidate on the shared shortlist. */
+export type Feedback = { by: string; verdict: "up" | "down"; comment: string; at: string };
 type Usage = { toolCalls?: number; lookups?: number; githubSearches?: number; pdlProfiles?: number };
 
 // ---------- starting a run ----------
@@ -66,8 +67,7 @@ const clip = (s: string | null | undefined, n: number) => (s && s.length > n ? `
 /** A short description of a person for the agent: only what's in their stored profile. */
 function describe(p: Person, brief: Brief, rules: RoleRules) {
   const sp = toScorable(p);
-  const { score, checks, status } = assess(p, brief, rules);
-  const loc = checks.find((c) => c.importance === "location");
+  const { score, checks, status, blocked } = assess(p, brief, rules);
   return {
     person_id: p.id,
     name: p.name ?? p.githubLogin,
@@ -85,7 +85,8 @@ function describe(p: Person, brief: Brief, rules: RoleRules) {
       missing: checks.filter((c) => c.status === "no").map((c) => c.label),
       unknown: checks.filter((c) => c.status === "unknown").map((c) => c.label),
     },
-    can_add: status === "review" || (score >= POSSIBLE && loc?.status !== "no"),
+    can_add: !blocked && (status === "review" || score >= POSSIBLE),
+    cannot_add_because: blocked === "company" ? "works at a company the recruiter said to avoid" : blocked ? "outside the role's area" : undefined,
   };
 }
 
@@ -99,6 +100,18 @@ export async function agentContext(runId: string) {
     where: { roleId: role.id, status: { in: ["approved", "skipped"] } },
     include: { person: true }, orderBy: { updatedAt: "desc" }, take: 25,
   });
+  const context = (role.context ?? {}) as RoleContext;
+  const rated = (await db.match.findMany({ where: { roleId: role.id, status: { in: ["review", "approved", "skipped"] } }, select: { feedback: true, person: { select: { name: true, githubLogin: true } } }, take: 80 }))
+    .flatMap((m) => ((m.feedback ?? []) as Feedback[]).map((f) => ({ candidate: m.person.name ?? m.person.githubLogin, verdict: f.verdict === "up" ? "wants to talk to them" : "not a fit", comment: f.comment || undefined })));
+  // "Someone like the person you want": when it's a GitHub profile, show the agent what that person's work looks like.
+  let idealExample: unknown = context.like || undefined;
+  const likeLogin = context.like?.match(/github\.com\/([a-z\d][a-z\d-]*)/i)?.[1];
+  if (likeLogin) {
+    try {
+      const p = await loadGithubPerson(likeLogin);
+      if (p) { const d = describe(p, brief, rules); idealExample = { name: d.name, languages: d.languages, repos: d.repos, current_role: d.current_role }; }
+    } catch (e) { console.error("Couldn't read the example profile", e); }
+  }
   await db.agentRun.update({ where: { id: runId }, data: { status: "running", progress: "Reading the role" } });
   return {
     role: { title: role.title, summary: brief.summary, payRange: (role.context as RoleContext).pay ?? brief.payRange },
@@ -107,7 +120,10 @@ export async function agentContext(runId: string) {
     locations: brief.locations, remoteOk: brief.remoteOk, excludedLocations: rules.excludedLocations ?? [],
     searchTerms: brief.searchTerms,
     languages: [...new Set(brief.criteria.flatMap((c) => c.languages))],
-    answers: (role.context as RoleContext),
+    targetCompanies: splitList(context.target),
+    avoidCompanies: rules.avoidCompanies ?? [],
+    idealExample,
+    hiringManagerFeedback: rated.slice(0, 20),
     approved: decided.filter((m) => m.status === "approved").slice(0, 8).map((m) => ({ ...describe(m.person, brief, rules), agent_note: (m.note as Note | null)?.why })),
     skipped: decided.filter((m) => m.status === "skipped").slice(0, 12).map((m) => ({ name: m.person.name ?? m.person.githubLogin, location: shortLocation(m.person.location), reason: m.skipReason, current_role: m.person.headline, languages: Object.keys(m.person.languages as object).slice(0, 3) })),
     questions: (role.questions as Question[]).map((q) => ({ question: q.text, answer: q.status })),
@@ -190,12 +206,8 @@ async function lookAtPeopleTool(run: RunWithRole, input: Record<string, unknown>
   const out = [];
   for (const login of logins) {
     if (optOutLogins.has(login.toLowerCase())) { out.push({ github: login, error: "This person asked not to be included." }); continue; }
-    let person = await db.person.findFirst({ where: { githubLogin: { equals: login, mode: "insensitive" } } });
-    if (!person || Date.now() - person.fetchedAt.getTime() > FRESH_MS) {
-      const profile = await fetchProfile(login).catch((e) => { if (e instanceof GitHubError) throw e; return null; });
-      if (!profile) { out.push({ github: login, error: "Couldn't read this profile." }); continue; }
-      person = await savePerson({ ...profile, languages: json(profile.languages), topRepos: json(profile.topRepos), fetchedAt: new Date() });
-    }
+    const person = await loadGithubPerson(login);
+    if (!person) { out.push({ github: login, error: "Couldn't read this profile." }); continue; }
     out.push(describe(person, brief, rules));
   }
   await db.agentRun.update({ where: { id: run.id }, data: { looked: { increment: out.length } } });
@@ -208,7 +220,7 @@ async function searchLinkedInTool(run: RunWithRole, input: Record<string, unknow
   const size = Math.min(10, LIMITS.pdlProfiles - used);
   if (size <= 0) return { progress: run.progress, result: { error: "You've used all LinkedIn profiles for this run." } };
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String).filter(Boolean).slice(0, 8) : []);
-  const search = { title: String(input.title ?? "").slice(0, 80), skills: list(input.skills), cities: list(input.cities), remote: Boolean(input.remote), boost: list(input.boost) };
+  const search = { title: String(input.title ?? "").slice(0, 80), skills: list(input.skills), cities: list(input.cities), remote: Boolean(input.remote), boost: list(input.boost), companies: list(input.companies) };
   const found = await searchLinkedIn(search, size);
   usage.pdlProfiles = used + found.people.length;
   const brief = run.role.brief as unknown as Brief;
@@ -219,13 +231,14 @@ async function searchLinkedInTool(run: RunWithRole, input: Record<string, unknow
     if (optOutLinks.has(lp.linkedinUrl) || (lp.githubLogin && optOutLogins.has(lp.githubLogin.toLowerCase()))) continue;
     const person = await savePerson({
       source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name,
-      location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, hasLinkedIn: true,
+      location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, email: lp.email, hasLinkedIn: true,
       skills: json(lp.skills), experience: json(lp.experience), fetchedAt: new Date(),
     });
     out.push(describe(person, brief, rules));
   }
   await db.agentRun.update({ where: { id: run.id }, data: { looked: { increment: out.length } } });
-  return { progress: `Searching LinkedIn: ${search.title || "people"}${search.cities.length && !search.remote ? ` in ${search.cities.join(", ")}` : ""}`, result: { people: out } };
+  const where = search.companies.length ? ` at ${search.companies.join(", ")}` : search.cities.length && !search.remote ? ` in ${search.cities.join(", ")}` : "";
+  return { progress: `Searching LinkedIn: ${search.title || "people"}${where}`, result: { people: out } };
 }
 
 /** Everything in a person's profile the agent may cite: repository names, roles, companies, skills, languages. */
@@ -249,8 +262,8 @@ async function addCandidatesTool(run: RunWithRole, input: Record<string, unknown
     const person = await db.person.findUnique({ where: { id: personId } });
     if (!person) { results.push({ person_id: personId, added: false, reason: "No person with that id. Use person_id exactly as the tools returned it." }); continue; }
     if (added >= LIMITS.adds) { results.push({ person_id: personId, added: false, reason: "This run has added as many people as it may. Finish now." }); continue; }
-    const { score, checks, status } = assess(person, brief, rules);
-    if (checks.find((c) => c.importance === "location")?.status === "no") { results.push({ person_id: personId, added: false, reason: "They're outside the role's area." }); continue; }
+    const { score, checks, status, blocked } = assess(person, brief, rules);
+    if (blocked) { results.push({ person_id: personId, added: false, reason: blocked === "company" ? "They work at a company the recruiter said to avoid." : "They're outside the role's area." }); continue; }
     if (status !== "review" && score < POSSIBLE) { results.push({ person_id: personId, added: false, reason: "Too weak a match against the brief's must-haves." }); continue; }
     // The safety check: every piece of evidence must be in their actual profile.
     const evidence = (Array.isArray(it.evidence) ? it.evidence : []).map(String).filter((e) => e.trim()).slice(0, 6);
@@ -310,17 +323,7 @@ export async function answerQuestion(roleId: string, questionId: string, yes: bo
   if (!q) return;
   const brief = yes ? applyChange(role.brief as unknown as Brief, q.change) : (role.brief as unknown as Brief);
   await db.role.update({ where: { id: roleId }, data: { brief: json(brief), questions: json(questions.map((x) => (x.id === questionId ? { ...x, status: yes ? "yes" : "no" } : x))) } });
-  if (yes) await markForRescore(roleId);
-}
-
-async function emailRecruiter(to: string, subject: string, text: string) {
-  const key = process.env.RESEND_API_KEY, from = process.env.EMAIL_FROM;
-  if (!key || !from) return;
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to, subject, text }), signal: AbortSignal.timeout(10_000),
-  }).catch((e) => { console.error("Email failed", e); return null; });
-  if (res && !res.ok) console.error("Email failed", res.status, await res.text().catch(() => ""));
+  if (yes) await resetSearch(roleId);
 }
 
 export async function finishRun(runId: string, outcome: { summary?: string; error?: string }) {
@@ -335,10 +338,10 @@ export async function finishRun(runId: string, outcome: { summary?: string; erro
   const open = ((run.role.questions ?? []) as Question[]).filter((q) => q.status === "open");
   if (!failed && (run.added > 0 || open.length)) {
     const site = (process.env.APP_URL || process.env.URL || "").replace(/\/$/, "");
-    await emailRecruiter(
-      run.role.user.email,
-      run.added ? `${run.added} new candidate${run.added === 1 ? "" : "s"} for ${run.role.title}` : `A question about ${run.role.title}`,
-      [summary, ...open.map((q) => `Question: ${q.text}`), "", `Review them: ${site}/app/roles/${run.roleId}`].filter((l) => l !== null).join("\n"),
-    );
+    await sendEmail({
+      to: run.role.user.email,
+      subject: run.added ? `${run.added} new candidate${run.added === 1 ? "" : "s"} for ${run.role.title}` : `A question about ${run.role.title}`,
+      text: [summary, ...open.map((q) => `Question: ${q.text}`), "", `Review them: ${site}/app/roles/${run.roleId}`].filter((l) => l !== null).join("\n"),
+    });
   }
 }

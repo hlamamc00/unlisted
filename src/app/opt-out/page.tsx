@@ -7,7 +7,7 @@ import { optOut, type OptOutState } from "./actions";
 export default function OptOutPage() {
   const [state, action, pending] = useActionState<OptOutState, FormData>(optOut, {});
   return (
-    <main className="wrap">
+    <main className="wrap public">
       <div className="panel auth">
         <Link href="/" className="brand" style={{ fontSize: 18 }}>Unlisted</Link>
         <h1 style={{ fontSize: 26 }}>Remove yourself</h1>

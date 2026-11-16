@@ -30,7 +30,7 @@ export const getUser = cache(async () => {
   if (!session) return null;
   return db.user.findUnique({
     where: { id: session.userId },
-    select: { id: true, email: true, name: true, company: true },
+    select: { id: true, email: true, name: true, company: true, schedulingUrl: true, mailingAddress: true },
   });
 });
 

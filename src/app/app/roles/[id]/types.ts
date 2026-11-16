@@ -1,0 +1,40 @@
+// What the role screen's components pass around. Types only, so client components can import this.
+import type { Brief, RoleContext } from "@/lib/brief";
+import type { Feedback, Note, Question } from "@/lib/agent";
+import type { Stage } from "@/lib/pipeline";
+import type { Check } from "@/lib/score";
+
+export type PersonView = {
+  login: string | null; linkedinUrl: string | null; headline: string | null; name: string | null; avatarUrl: string | null;
+  location: string | null; company: string | null; email: string | null; blog: string | null; hasLinkedIn: boolean; hireable: boolean;
+};
+
+export type Item = {
+  id: string;
+  status: "review" | "approved" | "skipped";
+  score: number;
+  checks: Check[];
+  evidence: { src: string; text: string }[];
+  hasDraft: boolean;
+  note: Note | null;
+  /** search | agent | pool | you */
+  foundBy: string;
+  stage: Stage;
+  notes: string;
+  followUpDue: boolean;
+  messages: { kind: string; channel: string; sentAt: string }[];
+  feedback: Feedback[];
+  person: PersonView;
+};
+
+export type Tab = Item["status"];
+
+export type RoleView = {
+  id: string; title: string; brief: Brief; context: RoleContext; excluded: string[];
+  /** How many people match on LinkedIn, from the last search, when known. */
+  linkedInTotal: number | null;
+  share: { path: string; expires: string } | null;
+};
+
+export type RunView = { id: string; status: string; progress: string; added: number; looked: number; summary: string | null; error: string | null; createdAt: string };
+export type AgentView = { enabled: boolean; nightly: boolean; run: RunView | null; questions: Question[] };

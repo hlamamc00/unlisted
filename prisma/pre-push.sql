@@ -16,6 +16,10 @@ BEGIN
     CREATE UNIQUE INDEX IF NOT EXISTS "Person_linkedinUrl_key" ON "Person"("linkedinUrl");
     CREATE UNIQUE INDEX IF NOT EXISTS "Person_pdlId_key" ON "Person"("pdlId");
   END IF;
+  IF to_regclass('"Role"') IS NOT NULL THEN
+    ALTER TABLE "Role" ADD COLUMN IF NOT EXISTS "shareToken" TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS "Role_shareToken_key" ON "Role"("shareToken");
+  END IF;
   IF to_regclass('"OptOut"') IS NOT NULL THEN
     ALTER TABLE "OptOut" ADD COLUMN IF NOT EXISTS "linkedinUrl" TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS "OptOut_linkedinUrl_key" ON "OptOut"("linkedinUrl");

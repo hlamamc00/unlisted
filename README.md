@@ -2,13 +2,18 @@
 
 Unlisted helps recruiters find candidates, including the ones they can't find on LinkedIn. A recruiter uploads or pastes a job description, Claude turns it into a brief, and Unlisted searches two sources: GitHub, for people found through their public work (many of them not on LinkedIn), and LinkedIn profiles through People Data Labs, a licensed data provider. Recruiters review each candidate against the brief with the evidence shown, approve or skip them, and draft a first message that cites the person's work.
 
-## What's in this first version
+## What it does
 
 - **Recruiter accounts:** sign up, log in and log out. Passwords are hashed with bcrypt and sessions are signed cookies.
-- **Roles from a job description:** PDF, Word (.docx), text or pasted. Claude reads it into must-haves, nice-to-haves, locations, pay, work authorization and search terms. Recruiters switch requirements between must-have and nice-to-have before saving. Without an Anthropic key, a keyword reader is used instead.
-- **Candidate search on GitHub:** repositories matching the brief's search terms, plus people by language and city. Each person is scored line by line against the brief. Seniority is never guessed from public data; it's marked "ask in your first conversation".
-- **Review queue:** approve or skip with a reason, with keyboard shortcuts (J/K, A, S then 1–4, M). Skipping someone for their location stops that location appearing for the role.
-- **Message drafts:** Claude writes a short first message citing the person's work and your pay range. An opt-out line is always added.
+- **Today:** one page showing what needs the recruiter across their roles: people to review, follow-ups due, people waiting to reply and questions from the agent.
+- **Roles from a job description:** PDF, Word (.docx), text or pasted. Claude reads it into must-haves, nice-to-haves, locations, pay, work authorization and search terms. The recruiter adjusts them, and can add the pay range, companies to look in, companies to avoid and an example person. Requirements can be edited later under **Role details**.
+- **Candidates from three places:** GitHub (people found through their public work), LinkedIn profiles through People Data Labs, and people already found for other roles who fit this one. Anyone can also be added by pasting their GitHub or LinkedIn link.
+- **Review:** each person is checked line by line against the brief, with the evidence. Approve or skip with a reason (shortcuts: J/K, A, S then 1–4, M). Skipping for location teaches the role.
+- **The sourcing agent:** starts as soon as a role is created, shows live progress, asks before changing the role, and can keep searching every night. See below.
+- **Pipeline:** approved people move through To contact, Contacted, Replied, Interviewing, Offer and Hired, with private notes and a message history.
+- **Messages:** Claude writes a first message from the person's work, signed with the recruiter's name and their scheduling link. With Resend set up it can be emailed from Unlisted (replies go to the recruiter's inbox); otherwise it's copied. A follow-up is suggested after 4 days without a reply, and a second 5 days later.
+- **Hiring manager link:** a link to the shortlist that works without an account for two weeks. Their yes or no and comments show on each candidate and are given to the agent.
+- **Export:** the pipeline as a CSV file.
 - **Privacy:** a privacy notice at `/privacy` and an opt-out at `/opt-out` that deletes the person and stops them being found again.
 
 ## Run it locally
@@ -40,7 +45,7 @@ Open http://localhost:3000 and create an account.
 | `PDL_API_KEY` | Optional: a [People Data Labs](https://www.peopledatalabs.com) API key. Adds LinkedIn profiles to searches. Each profile returned uses one credit (up to 10 per click); the free plan has about 100 a month |
 | `APP_URL` | Your site's address, for example `https://unlisted.ai`. Used in the opt-out link in messages |
 | `PRIVACY_EMAIL` | The address people write to about their data, shown on the privacy page |
-| `RESEND_API_KEY`, `EMAIL_FROM` | Optional: email recruiters when the agent finds new people, through [Resend](https://resend.com). `EMAIL_FROM` must use a domain verified with Resend |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Optional: lets recruiters email candidates from Unlisted, and emails them when the agent finds new people, through [Resend](https://resend.com). `EMAIL_FROM` must use a domain verified with Resend |
 
 4. Deploy. Production builds run `prisma db push` first, so the database tables are created automatically.
 
@@ -51,6 +56,10 @@ Each click on **Find candidates** runs a small batch, which keeps it inside a we
 Unlisted never scrapes LinkedIn itself: LinkedIn sues scrapers, and Proxycurl shut down in 2025 after it was sued. Someone found on both GitHub and LinkedIn is stored once, and every candidate is marked **On LinkedIn** or **Not on LinkedIn**. Profiles are cached for a week. People who opted out are never fetched or shown.
 
 Scores combine must-haves (weight 3), nice-to-haves (weight 1) and location, plus a small bonus for GitHub stars and recent activity. People outside the role's cities (or outside the US for remote roles), and people meeting fewer than half of the checkable must-haves, are kept out of the queue. A language counts when it's one of someone's main languages on GitHub or listed as a skill on their profile.
+
+## Messages and email
+
+Messages always end with an opt-out line, and with the recruiter's business address when they've added one in **Settings** (US law expects a postal address in commercial email). When Unlisted sends the email, it goes from `EMAIL_FROM` under the recruiter's name with replies going to the recruiter. Each recruiter can send 40 emails a day, and a person gets at most a first message and two follow-ups. Replies arrive in the recruiter's own inbox, so the recruiter marks the person as Replied; follow-ups are never sent automatically.
 
 ## The sourcing agent
 
@@ -69,10 +78,12 @@ When a recruiter creates a role or clicks **Find candidates**, the quick search 
 - Have a US privacy lawyer review the privacy notice and your obligations. Selling access to profiles of people you have no relationship with is likely to make you a data broker, which means registering in California, Texas, Vermont and Oregon and processing deletion requests from California's DROP system.
 - Keep it a sourcing tool, not a screening tool. Your terms should forbid using profiles to decide someone's eligibility for a job, which would bring in the Fair Credit Reporting Act.
 - Follow GitHub's terms for API use, and only send messages people can easily opt out of.
+- Before emailing candidates from Unlisted, add your business address in **Settings** (US law expects one in commercial email) and verify your sending domain with Resend. Send from a domain you can afford to protect: complaints affect its reputation.
 
 ## Next
 
-- Using the "companies to target or avoid" and "someone like the person you want" answers in the search.
 - More sources: research papers (OpenAlex), US patents (PatentsView) and professional directories.
-- Sending from the recruiter's Gmail or Outlook, and a pipeline view.
+- Sending from the recruiter's own Gmail or Outlook, with replies detected automatically.
+- Calendar scheduling, and direct integrations with applicant tracking systems (Greenhouse, Lever, Ashby, Bullhorn).
+- Teams: several recruiters sharing roles.
 - The recruiter network and split board from the prototype.

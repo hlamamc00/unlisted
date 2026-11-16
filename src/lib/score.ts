@@ -24,9 +24,9 @@ export type Score = { score: number; checks: Check[]; outOfArea: boolean };
 const DAY = 86_400_000;
 const city = (loc: string) => loc.split(",")[0].trim().toLowerCase();
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** Whole-word (or whole-phrase) match, so "ui" doesn't match "build". */
+/** Whole-word (or whole-phrase) match, so "ui" doesn't match "build". Plurals count: "exchange" matches "exchanges". */
 const hasPhrase = (text: string, phrase: string) =>
-  new RegExp(`(^|[^a-z0-9])${escapeRe(phrase.toLowerCase())}($|[^a-z0-9])`).test(text);
+  new RegExp(`(^|[^a-z0-9])${escapeRe(phrase.toLowerCase())}(e?s)?($|[^a-z0-9])`).test(text);
 
 /** Locations for display: "Chicago, Illinois, United States" reads as "Chicago, Illinois". */
 export const shortLocation = (loc: string | null) => loc?.replace(/,\s*(united states( of america)?|usa)\s*$/i, "").trim() || null;

@@ -8,14 +8,15 @@ import { scorePerson, type ScorablePerson } from "./score";
 
 type Query = { key: string; kind: "repos" | "users"; q: string };
 /** Pages read per query (-1 when a query has no more results) and people found but not yet looked at. */
-type SearchState = { pages?: Record<string, number>; pending?: string[]; pdlScroll?: string | null; pdlDone?: boolean; v?: number };
+export type SearchState = { pages?: Record<string, number>; pending?: string[]; pdlScroll?: string | null; pdlDone?: boolean; pdlTotal?: number; v?: number };
 
 const BATCH = 12; // people looked at per run, so a run stays well inside a web request's time limit
 const MAX_SEARCHES = 3; // GitHub searches per run
 const PDL_BATCH = 10; // LinkedIn profiles per run; each one costs a People Data Labs credit
 export const MIN_SCORE = 60; // below this a person stays out of the queue
+export const POSSIBLE = 45; // the agent may add someone this strong, with its reasons
 /** Bump when scoring changes: each role re-scores its candidates the next time it's opened. */
-export const SCORE_VERSION = 3;
+export const SCORE_VERSION = 4;
 const FRESH_MS = 7 * 86_400_000; // reuse a fetched profile for a week
 const json = (v: unknown) => v as Prisma.InputJsonValue;
 
@@ -94,6 +95,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
   let pending = [...(state.pending ?? [])];
   let pdlScroll = state.pdlScroll ?? null;
   let pdlDone = state.pdlDone ?? false;
+  let pdlTotal = state.pdlTotal;
 
   const [known, optedOut] = await Promise.all([
     db.match.findMany({ where: { roleId }, select: { person: { select: { githubLogin: true, linkedinUrl: true } } } }),
@@ -165,6 +167,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
   if (hasPdl() && !pdlDone) {
     try {
       const found = await searchLinkedIn(paramsFromBrief(brief), PDL_BATCH, pdlScroll);
+      if (!pdlScroll) pdlTotal = found.total; // how many people match on LinkedIn, from the first page
       pdlScroll = found.scrollToken;
       pdlDone = !found.scrollToken || !found.people.length;
       for (const lp of found.people) {
@@ -172,7 +175,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
         seenLinkedIn.add(lp.linkedinUrl);
         const person = await savePerson({
           source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name,
-          location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, hasLinkedIn: true,
+          location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, email: lp.email, hasLinkedIn: true,
           skills: json(lp.skills), experience: json(lp.experience), fetchedAt: new Date(),
         });
         await addMatch(person);
@@ -186,15 +189,70 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
 
   await db.role.update({
     where: { id: roleId },
-    data: { searchState: json({ pages, pending: [...leftover, ...pending], pdlScroll, pdlDone, v: SCORE_VERSION }), lastSearchAt: new Date() },
+    data: { searchState: json({ pages, pending: [...leftover, ...pending], pdlScroll, pdlDone, pdlTotal, v: SCORE_VERSION }), lastSearchAt: new Date() },
   });
   return { added, looked, message: notes.length ? notes.join(" ") : undefined };
 }
-/** Score a person for a role and decide whether they belong in its queue. */
-export function assess(person: Person, brief: Brief, rules: RoleRules) {
+
+/**
+ * Score a person for a role and decide whether they belong in its queue. `blocked` says why someone
+ * can't be shown whatever their score: outside the role's area, in a location the recruiter ruled
+ * out, or working at a company the recruiter said to avoid.
+ */
+export function assess(person: Person, brief: Brief, rules: RoleRules, minScore = MIN_SCORE) {
   const { score, checks, outOfArea } = scorePerson(toScorable(person), brief);
   const excluded = rules.excludedLocations?.some((x) => person.location?.toLowerCase().includes(x.toLowerCase()));
-  return { score, checks, status: score >= MIN_SCORE && !outOfArea && !excluded ? "review" : "filtered" };
+  const employers = [person.company, ...(person.experience as Role[]).filter((r) => r.current).map((r) => r.company)]
+    .flatMap((c) => (c ? [c.toLowerCase()] : []));
+  const avoided = rules.avoidCompanies?.some((a) => a.trim() && employers.some((e) => e.includes(a.trim().toLowerCase())));
+  const blocked = outOfArea ? ("area" as const) : excluded ? ("location" as const) : avoided ? ("company" as const) : null;
+  return { score, checks, blocked, status: score >= minScore && !blocked ? "review" : "filtered" };
+}
+
+/** The status a stored match should have after re-scoring. People the recruiter added themselves always stay. */
+function reassess(m: { foundBy: string; person: Person }, brief: Brief, rules: RoleRules) {
+  const a = assess(m.person, brief, rules, m.foundBy === "agent" ? POSSIBLE : MIN_SCORE);
+  return m.foundBy === "you" ? { ...a, status: "review" } : a;
+}
+
+/** A GitHub user from our store when fresh, otherwise fetched and saved. Null for organizations and unreadable profiles. */
+export async function loadGithubPerson(login: string): Promise<Person | null> {
+  const stored = await db.person.findFirst({ where: { githubLogin: { equals: login, mode: "insensitive" } } });
+  if (stored && Date.now() - stored.fetchedAt.getTime() < FRESH_MS) return stored;
+  const profile = await fetchProfile(login).catch((e) => { if (e instanceof GitHubError) throw e; return null; });
+  if (!profile) return stored;
+  return savePerson({ ...profile, languages: json(profile.languages), topRepos: json(profile.topRepos), fetchedAt: new Date() });
+}
+
+/**
+ * Rediscovery: people already found for other roles who fit this one. Free and instant, because it
+ * only uses stored profiles. Adds the best to the role's queue and returns how many.
+ */
+export async function matchFromPool(roleId: string): Promise<number> {
+  const role = await db.role.findUnique({ where: { id: roleId }, select: { brief: true, rules: true, matches: { select: { personId: true } } } });
+  if (!role) return 0;
+  const brief = role.brief as unknown as Brief;
+  const rules = (role.rules ?? {}) as RoleRules;
+  const have = new Set(role.matches.map((m) => m.personId));
+  const people = await db.person.findMany({ orderBy: { fetchedAt: "desc" }, take: 3000 });
+  const fits = people
+    .filter((p) => !have.has(p.id))
+    .map((p) => ({ p, a: assess(p, brief, rules) }))
+    .filter((x) => x.a.status === "review")
+    .sort((x, y) => y.a.score - x.a.score)
+    .slice(0, 25);
+  if (fits.length) {
+    await db.match.createMany({
+      data: fits.map(({ p, a }) => ({ roleId, personId: p.id, score: a.score, checks: json(a.checks), status: "review", foundBy: "pool" })),
+      skipDuplicates: true,
+    });
+  }
+  return fits.length;
+}
+
+/** After the brief changes: searches start over and candidates are re-scored the next time the role opens. */
+export async function resetSearch(roleId: string) {
+  await db.role.update({ where: { id: roleId }, data: { searchState: json({ v: 0 }) } });
 }
 
 /** Re-scores a role's undecided candidates when scoring or the role's rules have changed. Uses stored data only. */
@@ -207,7 +265,7 @@ export async function rescoreIfStale(roleId: string, userId: string) {
   const matches = await db.match.findMany({ where: { roleId, status: { in: ["review", "filtered"] } }, include: { person: true } });
   await db.$transaction([
     ...matches.map((m) => {
-      const { score, checks, status } = assess(m.person, brief, rules);
+      const { score, checks, status } = reassess(m, brief, rules);
       return db.match.update({ where: { id: m.id }, data: { score, checks: json(checks), status } });
     }),
     db.role.update({ where: { id: roleId }, data: { searchState: json({ ...state, v: SCORE_VERSION }) } }),

@@ -3,7 +3,7 @@ import { normalizeLinkedIn } from "./linkedin";
 
 // Public GitHub data only, through GitHub's REST API. With GITHUB_TOKEN set,
 // GitHub allows 30 searches a minute and 5,000 other requests an hour.
-const API = "https://api.github.com";
+const API = (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
 
 /** A GitHub problem the recruiter should see: limits used up or a rejected token. */
 export class GitHubError extends Error {}
