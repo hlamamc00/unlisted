@@ -84,6 +84,7 @@ export default async function RolePage({ params, searchParams }: { params: Promi
         items={items}
         agent={{
           enabled: hasClaude(),
+          paused: user.agentPaused,
           nightly: role.nightly,
           run: run ? { ...run, createdAt: run.createdAt.toISOString() } : null,
           questions: ((role.questions ?? []) as Question[]).filter((q) => q.status === "open"),

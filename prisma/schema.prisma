@@ -28,6 +28,9 @@ model User {
   schedulingUrl  String?
   /// Business postal address, added to the footer of emails Unlisted sends for this recruiter.
   mailingAddress String?
+  /// While true the sourcing agent never runs for this recruiter: not on new roles, not on Find
+  /// candidates, not overnight. Paused until they turn it on in Settings, because each run costs money.
+  agentPaused  Boolean  @default(true)
   createdAt    DateTime @default(now())
   roles        Role[]
 }

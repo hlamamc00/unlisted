@@ -76,7 +76,8 @@ export function RoleScreen({ role, items, agent, initialTab }: { role: RoleView;
   const find = () => startSearch(async () => {
     const r = await findCandidates(role.id);
     const quick = r.added ? `Found ${r.added} right away.` : r.message ?? "";
-    say([quick, r.agent.started ? "The agent is searching for more in the background." : r.agent.message].filter(Boolean).join(" ") || "No strong matches yet.");
+    const more = r.agent.started ? "The agent is searching for more in the background." : r.agent.paused ? (r.added ? "" : "The agent is paused, so only the quick search ran.") : r.agent.message;
+    say([quick, more].filter(Boolean).join(" ") || "No strong matches yet.");
     if (r.agent.started) {
       lastAdded.current = 0;
       setHideRunNote(false);
@@ -242,7 +243,7 @@ export function RoleScreen({ role, items, agent, initialTab }: { role: RoleView;
             setMessage(null); say(text); router.refresh();
           }} />
       )}
-      {roleDrawer && <RoleDrawer role={role} agentEnabled={agent.enabled} nightly={agent.nightly} focus={roleDrawer} onClose={() => setRoleDrawer(null)} say={say} />}
+      {roleDrawer && <RoleDrawer role={role} agentEnabled={agent.enabled} agentPaused={agent.paused} nightly={agent.nightly} focus={roleDrawer} onClose={() => setRoleDrawer(null)} say={say} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </>
   );

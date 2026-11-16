@@ -2,7 +2,7 @@ import { requireUser } from "@/lib/auth";
 import { hasClaude } from "@/lib/claude";
 import { canEmail } from "@/lib/email";
 import { hasPdl } from "@/lib/pdl";
-import { SettingsForm } from "./settings-form";
+import { AgentSwitch, SettingsForm } from "./settings-form";
 
 export const metadata = { title: "Settings" };
 
@@ -18,6 +18,9 @@ export default async function SettingsPage() {
     <main className="page narrow">
       <div className="page-head"><div><h1>Settings</h1><p className="hint">Signed in as {user.email}</p></div></div>
       <SettingsForm user={{ name: user.name, company: user.company ?? "", schedulingUrl: user.schedulingUrl ?? "", mailingAddress: user.mailingAddress ?? "" }} />
+
+      <h2 className="section-title">Sourcing agent</h2>
+      <AgentSwitch paused={user.agentPaused} connected={hasClaude()} />
 
       <h2 className="section-title">What&apos;s connected</h2>
       <div className="panel services">

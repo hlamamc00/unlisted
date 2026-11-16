@@ -63,7 +63,7 @@ Messages always end with an opt-out line, and with the recruiter's business addr
 
 ## The sourcing agent
 
-When a recruiter creates a role or clicks **Find candidates**, the quick search above shows the first people within seconds, and the sourcing agent starts in the background. It needs `ANTHROPIC_API_KEY`.
+The agent is paused for every recruiter until they turn it on under **Settings**, because each run costs money; pausing it again stops a run that's already going. Once it's on, when a recruiter creates a role or clicks **Find candidates**, the quick search above shows the first people within seconds, and the sourcing agent starts in the background. It needs `ANTHROPIC_API_KEY`.
 
 - **Where it runs:** a Netlify background function (`netlify/functions/agent-background.mts`), which may run for up to 15 minutes. It only drives the conversation with Claude; every step goes through the app's own agent API (`src/app/api/agent`), which does the searching, checking and saving. The two authenticate with a per-run token derived from `AUTH_SECRET`.
 - **What it does:** it reads the brief and what the recruiter approved and skipped, plans searches on GitHub and LinkedIn, looks closely at promising people, and adds the best to the review list with a note on why they fit and an opening line for a message. The role page shows its progress live, and new candidates appear as they're added.

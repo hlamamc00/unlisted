@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { criterionFromLabel, parseLocations, type Brief } from "@/lib/brief";
 import { addPerson, createShareLink, deleteRole, removeLocationRule, revokeShareLink, setNightly, updateRole, type RoleExtras } from "../../actions";
 import type { RoleView } from "./types";
 
-type Props = { role: RoleView; agentEnabled: boolean; nightly: boolean; focus: "details" | "add"; onClose(): void; say(message: string): void };
+type Props = { role: RoleView; agentEnabled: boolean; agentPaused: boolean; nightly: boolean; focus: "details" | "add"; onClose(): void; say(message: string): void };
 
 /** Everything about a role that isn't a candidate: its requirements, adding someone, sharing with the hiring manager, searching, export. */
-export function RoleDrawer({ role, agentEnabled, nightly, focus, onClose, say }: Props) {
+export function RoleDrawer({ role, agentEnabled, agentPaused, nightly, focus, onClose, say }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [link, setLink] = useState("");
@@ -105,7 +106,9 @@ export function RoleDrawer({ role, agentEnabled, nightly, focus, onClose, say }:
         <section className="drawer-sec">
           <h3>Searching</h3>
           {role.linkedInTotal !== null && <p>About <b>{role.linkedInTotal.toLocaleString("en-US")}</b> people on LinkedIn match this role in the US.</p>}
-          {agentEnabled ? (
+          {agentPaused ? (
+            <p className="hint">The agent is paused, so nothing runs in the background or overnight. Turn it on in <Link href="/app/settings">Settings</Link> when you want it.</p>
+          ) : agentEnabled ? (
             <label className="check">
               <input type="checkbox" checked={nightlyOn} onChange={async (e) => {
                 const on = e.target.checked; setNightlyOn(on); await setNightly(role.id, on);

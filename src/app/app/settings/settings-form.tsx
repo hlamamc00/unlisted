@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { updateSettings, type SettingsState } from "../actions";
+import { useActionState, useState, useTransition } from "react";
+import { setAgentPaused, updateSettings, type SettingsState } from "../actions";
 
 type Values = { name: string; company: string; schedulingUrl: string; mailingAddress: string };
 
@@ -27,5 +27,26 @@ export function SettingsForm({ user }: { user: Values }) {
         {state.saved && !pending && <span className="hint" role="status">Saved. Your messages are signed with your name from now on.</span>}
       </div>
     </form>
+  );
+}
+
+/** Turns the sourcing agent on or off for this recruiter. Paused by default, because each run costs money. */
+export function AgentSwitch({ paused, connected }: { paused: boolean; connected: boolean }) {
+  const [isPaused, setPaused] = useState(paused);
+  const [busy, start] = useTransition();
+  const toggle = () => start(async () => { await setAgentPaused(!isPaused); setPaused(!isPaused); });
+  return (
+    <div className="panel agent-switch">
+      <div>
+        <b>{isPaused ? "The agent is paused" : "The agent is on"}</b>
+        <p className="hint">
+          {isPaused
+            ? "Nothing runs in the background or overnight. Find candidates still runs the quick search, and Claude still reads job descriptions and writes your messages."
+            : "It searches in the background when you create a role or click Find candidates, and every night for roles where you've chosen that. Each run uses Claude, and LinkedIn profiles when they're connected."}
+          {isPaused && !connected && " Turning it on also needs Claude connected (see below)."}
+        </p>
+      </div>
+      <button className={isPaused ? "btn primary" : "btn"} onClick={toggle} disabled={busy}>{busy ? "Saving…" : isPaused ? "Turn on the agent" : "Pause the agent"}</button>
+    </div>
   );
 }

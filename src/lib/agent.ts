@@ -28,8 +28,10 @@ type Usage = { toolCalls?: number; lookups?: number; githubSearches?: number; pd
 // ---------- starting a run ----------
 
 /** Starts the agent for a role, unless one is already running. Returns the run, or why it couldn't start. */
-export async function startAgentRun(roleId: string, trigger: "manual" | "nightly"): Promise<{ runId?: string; message?: string }> {
+export async function startAgentRun(roleId: string, trigger: "manual" | "nightly"): Promise<{ runId?: string; paused?: boolean; message?: string }> {
   if (!hasClaude()) return { message: "Add an ANTHROPIC_API_KEY to let the agent search for you." };
+  const owner = await db.role.findUnique({ where: { id: roleId }, select: { user: { select: { agentPaused: true } } } });
+  if (!owner || owner.user.agentPaused) return { paused: true };
   const active = await db.agentRun.findFirst({ where: { roleId, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - (LIMITS.minutes + 3) * 60_000) } } });
   if (active) return { runId: active.id };
   if (trigger === "manual") {
@@ -135,7 +137,8 @@ export async function agentContext(runId: string) {
 // ---------- the tools ----------
 
 type RunWithRole = NonNullable<Awaited<ReturnType<typeof loadRun>>>;
-const loadRun = (runId: string) => db.agentRun.findUnique({ where: { id: runId }, include: { role: true } });
+const loadRun = (runId: string) =>
+  db.agentRun.findUnique({ where: { id: runId }, include: { role: { include: { user: { select: { agentPaused: true } } } } } });
 
 async function excludedPeople(roleId: string) {
   const [matched, optedOut] = await Promise.all([
@@ -152,6 +155,8 @@ async function excludedPeople(roleId: string) {
 export async function runTool(runId: string, name: string, input: Record<string, unknown>): Promise<unknown> {
   const run = await loadRun(runId);
   if (!run || !["running", "queued"].includes(run.status)) return { error: "This run has finished." };
+  // Pausing takes effect straight away, even for a run that's already going.
+  if (run.role.user.agentPaused) return { error: "The recruiter paused the agent. Stop now and reply with one sentence saying you stopped." };
   const usage = { ...((run.usage ?? {}) as Usage) };
   usage.toolCalls = (usage.toolCalls ?? 0) + 1;
   const overTime = Date.now() - run.createdAt.getTime() > LIMITS.minutes * 60_000;

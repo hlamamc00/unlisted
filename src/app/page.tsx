@@ -10,7 +10,7 @@ const STEPS = [
 const PILLARS = [
   ["People who aren't on LinkedIn", "Many strong engineers have no LinkedIn profile, or one they never update. Unlisted finds them through what they've built, next to the people who are on LinkedIn."],
   ["Evidence you can check", "Every candidate is checked off against your requirements, line by line. Anything the agent says about someone is verified against their real profile before you see it."],
-  ["An agent that asks before guessing", "It starts the moment you create a role and can keep searching every night. When a choice would change the role, such as allowing remote, it asks you first."],
+  ["An agent that asks before guessing", "Switch it on and it starts the moment you create a role, and can keep searching every night. When a choice would change the role, such as allowing remote, it asks you first."],
   ["Your hiring manager, one link away", "Share the shortlist with a link. They say yes or no without an account, and the search learns what they want."],
   ["A pipeline that reminds you", "Stages from first message to hire, private notes, follow-ups when someone hasn't replied, and a CSV export for your tracking system."],
   ["Respectful by design", "Matching never uses age, gender or other protected traits. You approve every message, and anyone can remove themselves at any time."],

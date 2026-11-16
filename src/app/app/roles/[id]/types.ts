@@ -37,4 +37,5 @@ export type RoleView = {
 };
 
 export type RunView = { id: string; status: string; progress: string; added: number; looked: number; summary: string | null; error: string | null; createdAt: string };
-export type AgentView = { enabled: boolean; nightly: boolean; run: RunView | null; questions: Question[] };
+/** `enabled`: Claude is connected. `paused`: the recruiter has the agent switched off in Settings. */
+export type AgentView = { enabled: boolean; paused: boolean; nightly: boolean; run: RunView | null; questions: Question[] };

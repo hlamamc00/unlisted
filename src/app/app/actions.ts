@@ -93,7 +93,7 @@ export async function updateRole(roleId: string, input: { brief: Brief; extras: 
   revalidatePath(`/app/roles/${roleId}`);
 }
 
-export type FindResult = SearchResult & { agent: { started: boolean; message?: string } };
+export type FindResult = SearchResult & { agent: { started: boolean; paused: boolean; message?: string } };
 
 /** The quick search (results in seconds), and the agent, which keeps working in the background for a few minutes. */
 export async function findCandidates(roleId: string): Promise<FindResult> {
@@ -102,9 +102,10 @@ export async function findCandidates(roleId: string): Promise<FindResult> {
   let result: SearchResult;
   try { result = await runSearch(roleId, user.id); }
   catch (e) { console.error("Search failed", e); result = { added: 0, looked: 0, message: "The quick search couldn't finish." }; }
-  const agent = await startAgentRun(roleId, "manual").catch((e) => { console.error("The agent didn't start", e); return { runId: undefined, message: "The agent couldn't start." }; });
+  const agent: Awaited<ReturnType<typeof startAgentRun>> = await startAgentRun(roleId, "manual")
+    .catch((e) => { console.error("The agent didn't start", e); return { message: "The agent couldn't start." }; });
   revalidatePath(`/app/roles/${roleId}`);
-  return { ...result, agent: { started: Boolean(agent.runId), message: agent.message } };
+  return { ...result, agent: { started: Boolean(agent.runId), paused: Boolean(agent.paused), message: agent.message } };
 }
 
 /** Yes or no to a question the agent asked. A yes changes the role's brief. */
@@ -113,6 +114,13 @@ export async function answerAgentQuestion(roleId: string, questionId: string, ye
   if (!(await db.role.findFirst({ where: { id: roleId, userId: user.id }, select: { id: true } }))) throw new Error("Role not found");
   await answerQuestion(roleId, questionId, yes);
   revalidatePath(`/app/roles/${roleId}`);
+}
+
+/** Pauses or resumes the sourcing agent for this recruiter. Paused, it never runs: no background searches, nothing overnight. */
+export async function setAgentPaused(paused: boolean) {
+  const user = await requireUser();
+  await db.user.update({ where: { id: user.id }, data: { agentPaused: paused } });
+  revalidatePath("/app", "layout");
 }
 
 /** Switches the overnight top-up on or off for a role. */

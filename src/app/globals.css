@@ -131,6 +131,8 @@ a.tile:hover, a.role-card:hover { border-color: var(--muted); }
 .empty-start p { color: var(--muted); }
 
 /* ---------- settings ---------- */
+.agent-switch { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.agent-switch > div { flex: 1 1 320px; min-width: 0; }
 .services { display: grid; gap: 14px; }
 .service { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; }
 .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 7px; background: var(--line); }

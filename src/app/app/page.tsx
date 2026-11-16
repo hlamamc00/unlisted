@@ -96,12 +96,12 @@ export default async function TodayPage() {
                     <p className="hint">{STAGES.filter(([k]) => k !== "closed" && c.stages[k] > 0).map(([k, label]) => `${c.stages[k]} ${label.toLowerCase()}`).join(" · ")}</p>
                   </div>
                 )}
-                {(c.due > 0 || c.questions > 0 || c.searching || c.nightly) && (
+                {(c.due > 0 || c.questions > 0 || c.searching || (c.nightly && !user.agentPaused)) && (
                   <div className="chips">
                     {c.due > 0 && <span className="chip ctx">{plural(c.due, "follow-up")} due</span>}
                     {c.questions > 0 && <span className="chip ctx">{plural(c.questions, "question")} for you</span>}
                     {c.searching && <span className="chip must">Agent searching</span>}
-                    {c.nightly && <span className="chip">Searches every night</span>}
+                    {c.nightly && !user.agentPaused && <span className="chip">Searches every night</span>}
                   </div>
                 )}
               </Link>
