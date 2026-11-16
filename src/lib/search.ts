@@ -3,17 +3,19 @@ import type { Person, Prisma } from "@prisma/client";
 import { db } from "./db";
 import type { Brief, RoleRules } from "./brief";
 import { GitHubError, fetchProfile, searchRepoOwners, searchUsers, type Profile, type Repo } from "./github";
+import { PdlError, hasPdl, searchLinkedIn, type Role } from "./pdl";
 import { scorePerson, type ScorablePerson } from "./score";
 
 type Query = { key: string; kind: "repos" | "users"; q: string };
 /** Pages read per query (-1 when a query has no more results) and people found but not yet looked at. */
-type SearchState = { pages?: Record<string, number>; pending?: string[]; v?: number };
+type SearchState = { pages?: Record<string, number>; pending?: string[]; pdlScroll?: string | null; pdlDone?: boolean; v?: number };
 
 const BATCH = 12; // people looked at per run, so a run stays well inside a web request's time limit
 const MAX_SEARCHES = 3; // GitHub searches per run
+const PDL_BATCH = 10; // LinkedIn profiles per run; each one costs a People Data Labs credit
 export const MIN_SCORE = 60; // below this a person stays out of the queue
 /** Bump when scoring changes: each role re-scores its candidates the next time it's opened. */
-export const SCORE_VERSION = 2;
+export const SCORE_VERSION = 3;
 const FRESH_MS = 7 * 86_400_000; // reuse a fetched profile for a week
 const json = (v: unknown) => v as Prisma.InputJsonValue;
 
@@ -40,9 +42,10 @@ export function buildQueries(brief: Brief): Query[] {
 
 export function toScorable(p: Person): ScorablePerson & { followers: number; hireable: boolean | null } {
   return {
-    bio: p.bio, company: p.company, location: p.location, followers: p.followers, hireable: p.hireable,
+    bio: p.bio, company: p.company, location: p.location, headline: p.headline, followers: p.followers, hireable: p.hireable,
     languages: p.languages as Record<string, number>, topRepos: p.topRepos as Repo[],
     totalStars: p.totalStars, lastPushAt: p.lastPushAt,
+    skills: p.skills as string[], experience: p.experience as Role[],
   };
 }
 
@@ -55,9 +58,32 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
+type PersonFields = Omit<Prisma.PersonCreateInput, "matches">;
+const KEYS = ["githubLogin", "linkedinUrl", "pdlId"] as const;
+
+/**
+ * Saves a person found on GitHub or LinkedIn. Someone already stored under the same GitHub username,
+ * LinkedIn address or PDL id is updated rather than duplicated, and fields this source doesn't have are kept.
+ */
+async function savePerson(data: PersonFields): Promise<Person> {
+  const or = KEYS.flatMap((k) => (data[k] ? [{ [k]: data[k] }] : []));
+  const found = or.length ? await db.person.findMany({ where: { OR: or } }) : [];
+  if (!found.length) return db.person.create({ data });
+  const [target, ...others] = found;
+  const update: Record<string, unknown> = { ...data };
+  delete update.source;
+  for (const [k, v] of Object.entries(update)) if (v === null || v === undefined) delete update[k];
+  for (const k of KEYS) if (update[k] && others.some((o) => o[k] === update[k])) delete update[k];
+  if (target.hasLinkedIn) delete update.hasLinkedIn; // GitHub not linking LinkedIn doesn't undo a LinkedIn profile we found
+  return db.person.update({ where: { id: target.id }, data: update as Prisma.PersonUpdateInput });
+}
+
 export type SearchResult = { added: number; looked: number; message?: string };
 
-/** One run: find up to BATCH new people for a role, score them and add the good ones to its queue. */
+/**
+ * One run for a role: up to BATCH people from GitHub (found through their code, many not on LinkedIn)
+ * and, when People Data Labs is set up, up to PDL_BATCH LinkedIn profiles. Good matches join the queue.
+ */
 export async function runSearch(roleId: string, userId: string): Promise<SearchResult> {
   const role = await db.role.findFirst({ where: { id: roleId, userId } });
   if (!role) throw new Error("Role not found");
@@ -66,19 +92,37 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
   const state = (role.searchState ?? {}) as SearchState;
   const pages = { ...(state.pages ?? {}) };
   let pending = [...(state.pending ?? [])];
+  let pdlScroll = state.pdlScroll ?? null;
+  let pdlDone = state.pdlDone ?? false;
 
   const [known, optedOut] = await Promise.all([
-    db.match.findMany({ where: { roleId }, select: { person: { select: { githubLogin: true } } } }),
-    db.optOut.findMany({ select: { githubLogin: true } }),
+    db.match.findMany({ where: { roleId }, select: { person: { select: { githubLogin: true, linkedinUrl: true } } } }),
+    db.optOut.findMany({ select: { githubLogin: true, linkedinUrl: true } }),
   ]);
-  const seen = new Set([...known.map((m) => m.person.githubLogin), ...optedOut.map((o) => o.githubLogin)].map((l) => l.toLowerCase()));
+  const people = [...known.map((m) => m.person), ...optedOut];
+  const seen = new Set(people.flatMap((p) => (p.githubLogin ? [p.githubLogin.toLowerCase()] : [])));
+  const seenLinkedIn = new Set(people.flatMap((p) => (p.linkedinUrl ? [p.linkedinUrl] : [])));
   pending = pending.filter((l) => !seen.has(l.toLowerCase()));
   pending.forEach((l) => seen.add(l.toLowerCase()));
 
-  let message: string | undefined;
+  let added = 0, looked = 0;
+  const notes: string[] = [];
+  const addMatch = async (person: Person) => {
+    looked++;
+    const { score, checks, status } = assess(person, brief, rules);
+    await db.match.upsert({
+      where: { roleId_personId: { roleId, personId: person.id } },
+      create: { roleId, personId: person.id, score, checks: json(checks), status },
+      update: {},
+    });
+    if (status === "review") added++;
+  };
+
+  // GitHub: people found through what they've built.
   const queries = buildQueries(brief)
     .filter((q) => pages[q.key] !== -1)
     .sort((a, b) => (pages[a.key] ?? 0) - (pages[b.key] ?? 0));
+  let githubNote: string | undefined;
   try {
     for (const q of queries.slice(0, MAX_SEARCHES)) {
       if (pending.length >= BATCH) break;
@@ -89,19 +133,16 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
     }
   } catch (e) {
     if (!(e instanceof GitHubError)) throw e;
-    message = e.message;
+    githubNote = e.message;
   }
-  if (!pending.length && !queries.length) message ??= "There are no more GitHub results for this brief. Edit the brief to search differently.";
 
   const batch = pending.slice(0, BATCH);
   pending = pending.slice(BATCH);
   const cached = new Map(
     (await db.person.findMany({ where: { githubLogin: { in: batch } } }))
       .filter((p) => Date.now() - p.fetchedAt.getTime() < FRESH_MS)
-      .map((p) => [p.githubLogin.toLowerCase(), p]),
+      .map((p) => [(p.githubLogin ?? "").toLowerCase(), p]),
   );
-
-  let added = 0, looked = 0;
   const leftover: string[] = [];
   await mapLimit(batch, 6, async (login) => {
     let person = cached.get(login.toLowerCase());
@@ -109,30 +150,46 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
       let profile: Profile | null;
       try { profile = await fetchProfile(login); }
       catch (e) {
-        if (e instanceof GitHubError) { message = e.message; leftover.push(login); return; }
+        if (e instanceof GitHubError) { githubNote = e.message; leftover.push(login); return; }
         return; // a profile that can't be read is skipped
       }
       if (!profile) return;
-      const data = { ...profile, languages: json(profile.languages), topRepos: json(profile.topRepos), fetchedAt: new Date() };
-      person = await db.person.upsert({ where: { githubLogin: profile.githubLogin }, create: data, update: data });
+      if (profile.linkedinUrl && seenLinkedIn.has(profile.linkedinUrl)) return; // already in this role, or opted out
+      person = await savePerson({ ...profile, languages: json(profile.languages), topRepos: json(profile.topRepos), fetchedAt: new Date() });
     }
-    looked++;
-    const { score, checks, status } = assess(person, brief, rules);
-    await db.match.upsert({
-      where: { roleId_personId: { roleId, personId: person.id } },
-      create: { roleId, personId: person.id, score, checks: json(checks), status },
-      update: {},
-    });
-    if (status === "review") added++;
+    await addMatch(person);
   });
+  if (githubNote) notes.push(githubNote);
+
+  // LinkedIn, through People Data Labs.
+  if (hasPdl() && !pdlDone) {
+    try {
+      const found = await searchLinkedIn(brief, PDL_BATCH, pdlScroll);
+      pdlScroll = found.scrollToken;
+      pdlDone = !found.scrollToken || !found.people.length;
+      for (const lp of found.people) {
+        if (seenLinkedIn.has(lp.linkedinUrl) || (lp.githubLogin && seen.has(lp.githubLogin.toLowerCase()))) continue;
+        seenLinkedIn.add(lp.linkedinUrl);
+        const person = await savePerson({
+          source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name,
+          location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, hasLinkedIn: true,
+          skills: json(lp.skills), experience: json(lp.experience), fetchedAt: new Date(),
+        });
+        await addMatch(person);
+      }
+    } catch (e) {
+      if (!(e instanceof PdlError)) throw e;
+      notes.push(e.message);
+    }
+  }
+  if (!batch.length && !queries.length && (pdlDone || !hasPdl())) notes.push("There are no more results for this brief. Edit the brief to search differently.");
 
   await db.role.update({
     where: { id: roleId },
-    data: { searchState: json({ pages, pending: [...leftover, ...pending], v: SCORE_VERSION }), lastSearchAt: new Date() },
+    data: { searchState: json({ pages, pending: [...leftover, ...pending], pdlScroll, pdlDone, v: SCORE_VERSION }), lastSearchAt: new Date() },
   });
-  return { added, looked, message };
+  return { added, looked, message: notes.length ? notes.join(" ") : undefined };
 }
-
 /** Score a person for a role and decide whether they belong in its queue. */
 function assess(person: Person, brief: Brief, rules: RoleRules) {
   const { score, checks, outOfArea } = scorePerson(toScorable(person), brief);

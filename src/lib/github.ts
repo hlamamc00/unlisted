@@ -1,4 +1,5 @@
 import "server-only";
+import { normalizeLinkedIn } from "./linkedin";
 
 // Public GitHub data only, through GitHub's REST API. With GITHUB_TOKEN set,
 // GitHub allows 30 searches a minute and 5,000 other requests an hour.
@@ -57,7 +58,7 @@ export type Repo = { name: string; description: string | null; stars: number; la
 export type Profile = {
   githubLogin: string; name: string | null; avatarUrl: string | null; location: string | null; bio: string | null;
   company: string | null; blog: string | null; email: string | null; hireable: boolean | null; followers: number;
-  hasLinkedIn: boolean; languages: Record<string, number>; topRepos: Repo[]; totalStars: number; lastPushAt: Date | null;
+  hasLinkedIn: boolean; linkedinUrl: string | null; languages: Record<string, number>; topRepos: Repo[]; totalStars: number; lastPushAt: Date | null;
 };
 
 /** A person's public profile, own repositories and linked accounts. Null for organizations. */
@@ -77,7 +78,8 @@ export async function fetchProfile(login: string): Promise<Profile | null> {
     .sort((a, b) => b.stargazers_count - a.stargazers_count || Date.parse(b.pushed_at) - Date.parse(a.pushed_at))
     .slice(0, 6)
     .map((r) => ({ name: r.name, description: r.description, stars: r.stargazers_count, language: r.language, topics: r.topics ?? [], pushedAt: r.pushed_at, url: r.html_url }));
-  const linkedInText = /linkedin\.com/i;
+  const linkedinUrl =
+    normalizeLinkedIn(social.find((s) => s.provider === "linkedin")?.url) ?? normalizeLinkedIn(user.blog) ?? normalizeLinkedIn(user.bio);
 
   return {
     githubLogin: user.login,
@@ -90,7 +92,8 @@ export async function fetchProfile(login: string): Promise<Profile | null> {
     email: user.email,
     hireable: user.hireable,
     followers: user.followers,
-    hasLinkedIn: social.some((s) => s.provider === "linkedin") || linkedInText.test(user.blog ?? "") || linkedInText.test(user.bio ?? ""),
+    hasLinkedIn: Boolean(linkedinUrl) || social.some((s) => s.provider === "linkedin"),
+    linkedinUrl,
     languages,
     topRepos,
     totalStars: own.reduce((sum, r) => sum + r.stargazers_count, 0),

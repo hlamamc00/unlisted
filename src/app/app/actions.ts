@@ -113,7 +113,7 @@ export async function draftMessage(matchId: string): Promise<{ draft: string; us
   const brief = match.role.brief as unknown as Brief;
   const context = (match.role.context ?? {}) as RoleContext;
   const person = match.person;
-  const firstName = person.name?.split(" ")[0] || person.githubLogin;
+  const firstName = person.name?.split(" ")[0] || person.githubLogin || "there";
   const evidence = evidenceFor(toScorable(person)).map((e) => e.text);
   const pay = context.pay || brief.payRange;
 
@@ -126,7 +126,7 @@ export async function draftMessage(matchId: string): Promise<{ draft: string; us
   const topRepo = (person.topRepos as { name: string }[])[0]?.name;
   body ??= [
     `Hi ${firstName},`,
-    `I came across your work on GitHub${topRepo ? `, including ${topRepo}` : ""}. I'm hiring for a ${brief.title} role, and your work is close to what the team is building.${pay ? ` The pay range is ${pay}.` : ""}`,
+    `${topRepo ? `I came across your work on GitHub, including ${topRepo}.` : person.headline ? `I came across your profile and your experience as ${person.headline}${person.company ? ` at ${person.company}` : ""}.` : "I came across your profile."} I'm hiring for a ${brief.title} role, and your background is close to what the team needs.${pay ? ` The pay range is ${pay}.` : ""}`,
     "Would you be open to a 15-minute call? If the timing's wrong, no problem.",
     "[Your name]",
   ].join("\n\n");

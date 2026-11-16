@@ -3,8 +3,8 @@ import { SiteHeader } from "@/components/site-header";
 
 const PILLARS = [
   ["Start from the job description", "Upload it or paste it. Unlisted pulls out the real requirements, ignores the benefits and company blurb, and lets you mark what's truly a must-have."],
-  ["Found through their work", "Candidates come from what they've built: their repositories, the languages they write and the projects people use. Every match shows the evidence."],
-  ["People LinkedIn search misses", "Many of the strongest engineers have no LinkedIn profile, or one they never update. Each candidate shows whether they link one at all."],
+  ["LinkedIn and beyond", "Candidates come from LinkedIn profiles and from what people have built on GitHub, so you also see the strong people who aren't on LinkedIn at all. Every match shows the evidence."],
+  ["See who LinkedIn misses", "Many of the strongest engineers have no LinkedIn profile, or one they never update. Every candidate is marked On LinkedIn or Not on LinkedIn."],
   ["Review fast, teach it as you go", "Approve or skip with a keystroke. Skip someone for their location and the role stops showing people from there."],
   ["Messages that cite their work", "Draft a first message that mentions a specific project of theirs, with your pay range and an easy way to say no."],
   ["Respectful by design", "Matching never uses age, gender or other protected traits, and anyone can remove themselves at any time."],

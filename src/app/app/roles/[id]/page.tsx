@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import type { Brief, RoleContext, RoleRules } from "@/lib/brief";
-import { evidenceFor, type Check } from "@/lib/score";
+import { evidenceFor, shortLocation, type Check } from "@/lib/score";
 import { rescoreIfStale, toScorable } from "@/lib/search";
 import { SiteHeader } from "@/components/site-header";
 import { ReviewQueue, type Item } from "./review-queue";
@@ -31,9 +31,11 @@ export default async function RolePage({ params }: { params: Promise<{ id: strin
     hasDraft: Boolean(m.draft),
     person: {
       login: m.person.githubLogin,
+      linkedinUrl: m.person.linkedinUrl,
+      headline: m.person.headline,
       name: m.person.name,
       avatarUrl: m.person.avatarUrl,
-      location: m.person.location,
+      location: shortLocation(m.person.location),
       company: m.person.company,
       email: m.person.email,
       blog: m.person.blog,

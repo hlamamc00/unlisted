@@ -3,6 +3,7 @@
 // account age is deliberately not used as a stand-in for experience.
 import type { Brief } from "./brief";
 import type { Repo } from "./github";
+import type { Role } from "./pdl";
 
 export type Check = {
   label: string;
@@ -12,8 +13,10 @@ export type Check = {
 };
 
 export type ScorablePerson = {
-  bio: string | null; company: string | null; location: string | null;
+  bio: string | null; company: string | null; location: string | null; headline: string | null;
   languages: Record<string, number>; topRepos: Repo[]; totalStars: number; lastPushAt: Date | null;
+  /** From a LinkedIn profile, when we have one. */
+  skills: string[]; experience: Role[];
 };
 
 export type Score = { score: number; checks: Check[]; outOfArea: boolean };
@@ -24,6 +27,9 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** Whole-word (or whole-phrase) match, so "ui" doesn't match "build". */
 const hasPhrase = (text: string, phrase: string) =>
   new RegExp(`(^|[^a-z0-9])${escapeRe(phrase.toLowerCase())}($|[^a-z0-9])`).test(text);
+
+/** Locations for display: "Chicago, Illinois, United States" reads as "Chicago, Illinois". */
+export const shortLocation = (loc: string | null) => loc?.replace(/,\s*(united states( of america)?|usa)\s*$/i, "").trim() || null;
 
 export const fitLabel = (score: number) => (score >= 85 ? "Strong match" : score >= 70 ? "Good match" : "Possible match");
 export const fitLevel = (score: number) => (score >= 85 ? "strong" : score >= 70 ? "good" : "possible");
@@ -56,17 +62,20 @@ function locationCheck(p: ScorablePerson, brief: Brief): Check {
   if (!p.location?.trim()) return { label: "Location", importance: "location", status: "unknown", detail: "Not on their profile" };
   const where = p.location.toLowerCase();
   const hit = brief.locations.find((l) => where.includes(city(l)));
-  if (hit) return { label: p.location, importance: "location", status: "yes" };
-  if (inUS(p.location) === false) return { label: p.location, importance: "location", status: "no", detail: "Outside the US" };
-  if (brief.remoteOk || !brief.locations.length) return { label: p.location, importance: "location", status: "yes", detail: "In the US" };
-  return { label: p.location, importance: "location", status: "no", detail: "Outside your locations" };
+  const label = shortLocation(p.location) ?? p.location;
+  if (hit) return { label, importance: "location", status: "yes" };
+  if (inUS(p.location) === false) return { label, importance: "location", status: "no", detail: "Outside the US" };
+  if (brief.remoteOk || !brief.locations.length) return { label, importance: "location", status: "yes", detail: "In the US" };
+  return { label, importance: "location", status: "no", detail: "Outside your locations" };
 }
 
 // ---------- the score ----------
 
 export function scorePerson(p: ScorablePerson, brief: Brief): Score {
   const repoText = (r: Repo) => [r.name.replace(/[-_.]/g, " "), r.description ?? "", ...r.topics].join(" ").toLowerCase();
-  const corpus = [p.bio ?? "", p.company ?? "", ...p.topRepos.map(repoText)].join(" ").toLowerCase();
+  const corpus = [p.bio ?? "", p.company ?? "", p.headline ?? "", ...p.skills, ...p.experience.flatMap((r) => [r.title, r.company ?? ""]),
+    ...p.topRepos.map(repoText)].join(" ").toLowerCase();
+  const skills = new Set(p.skills.map((x) => x.toLowerCase()));
   const ranked = Object.entries(p.languages).sort((a, b) => b[1] - a[1]);
   const total = ranked.reduce((sum, [, n]) => sum + n, 0);
   const mainLanguages = ranked.slice(0, 2).map(([l]) => l).join(" and ");
@@ -90,8 +99,10 @@ export function scorePerson(p: ScorablePerson, brief: Brief): Score {
     const aboutLanguage = c.languages.some((l) => c.label.toLowerCase().includes(l.toLowerCase())) || !c.signals.length;
     let yes: boolean, detail: string | undefined;
     if (aboutLanguage) {
-      yes = c.languages.some(isMain);
-      detail = yes ? "One of their main languages" : mainLanguages ? `Mainly writes ${mainLanguages}` : "No public code yet";
+      const inCode = c.languages.some(isMain);
+      const listed = c.languages.some((l) => skills.has(l.toLowerCase()));
+      yes = inCode || listed;
+      detail = inCode ? "One of their main languages" : listed ? "Listed as a skill" : mainLanguages ? `Mainly writes ${mainLanguages}` : "Not in their code or skills";
     } else {
       const signal = c.signals.find((s) => s.trim() && hasPhrase(corpus, s));
       const repo = signal ? p.topRepos.find((r) => hasPhrase(repoText(r), signal)) : undefined;
@@ -116,6 +127,11 @@ export function scorePerson(p: ScorablePerson, brief: Brief): Score {
 /** Plain-language lines about someone's public work, for the review screen and message drafts. */
 export function evidenceFor(p: ScorablePerson & { followers: number; hireable: boolean | null }): { src: string; text: string }[] {
   const out: { src: string; text: string }[] = [];
+  const at = (r: Role) => `${r.title}${r.company ? ` at ${r.company}` : ""}`;
+  const current = p.experience.find((r) => r.current) ?? (p.headline ? { title: p.headline, company: p.company, current: true } : null);
+  if (current) out.push({ src: "Role", text: at(current) });
+  for (const r of p.experience.filter((r) => r !== current && !r.current).slice(0, 2)) out.push({ src: "Before", text: at(r) });
+  if (p.skills.length) out.push({ src: "Skills", text: p.skills.slice(0, 8).join(", ") });
   for (const r of p.topRepos.slice(0, 3)) {
     const bits = [r.stars ? `${r.stars.toLocaleString("en-US")} star${r.stars === 1 ? "" : "s"}` : null, r.language].filter(Boolean).join(", ");
     out.push({ src: "GitHub", text: `${r.name}${r.description ? `: ${r.description}` : ""}${bits ? ` (${bits})` : ""}` });

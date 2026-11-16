@@ -1,6 +1,6 @@
 # Unlisted
 
-Unlisted helps recruiters find candidates they can't find on LinkedIn. A recruiter uploads or pastes a job description, Claude turns it into a brief, and Unlisted searches GitHub for people whose public work fits. Recruiters review each candidate against the brief with the evidence shown, approve or skip them, and draft a first message that cites the person's work.
+Unlisted helps recruiters find candidates, including the ones they can't find on LinkedIn. A recruiter uploads or pastes a job description, Claude turns it into a brief, and Unlisted searches two sources: GitHub, for people found through their public work (many of them not on LinkedIn), and LinkedIn profiles through People Data Labs, a licensed data provider. Recruiters review each candidate against the brief with the evidence shown, approve or skip them, and draft a first message that cites the person's work.
 
 ## What's in this first version
 
@@ -37,6 +37,7 @@ Open http://localhost:3000 and create an account.
 | `AUTH_SECRET` | At least 32 random characters. Generate one with `openssl rand -base64 48` |
 | `ANTHROPIC_API_KEY` | From console.anthropic.com. Lets Claude read job descriptions and draft messages |
 | `GITHUB_TOKEN` | A GitHub personal access token with no scopes. Raises GitHub's limits from 60 to 5,000 requests an hour |
+| `PDL_API_KEY` | Optional: a [People Data Labs](https://www.peopledatalabs.com) API key. Adds LinkedIn profiles to searches. Each profile returned uses one credit (up to 10 per click); the free plan has about 100 a month |
 | `APP_URL` | Your site's address, for example `https://unlisted.ai`. Used in the opt-out link in messages |
 | `PRIVACY_EMAIL` | The address people write to about their data, shown on the privacy page |
 
@@ -44,9 +45,11 @@ Open http://localhost:3000 and create an account.
 
 ## How the search works
 
-Each click on **Find candidates** runs a small batch: up to 3 GitHub searches and 8 people. That keeps it inside a web request's time limit. People found but not yet looked at are kept for the next click. Profiles are cached for a week. People who opted out are never fetched or shown.
+Each click on **Find candidates** runs a small batch, which keeps it inside a web request's time limit: up to 3 GitHub searches and 12 people, plus up to 10 LinkedIn profiles from People Data Labs when `PDL_API_KEY` is set. People found but not yet looked at are kept for the next click.
 
-Scores combine must-haves (weight 3), nice-to-haves (weight 1) and location (1.5, and only when the role isn't remote), plus a small bonus for stars and recent activity. Anyone who misses every must-have that public code can show is kept out of the queue.
+Unlisted never scrapes LinkedIn itself: LinkedIn sues scrapers, and Proxycurl shut down in 2025 after it was sued. Someone found on both GitHub and LinkedIn is stored once, and every candidate is marked **On LinkedIn** or **Not on LinkedIn**. Profiles are cached for a week. People who opted out are never fetched or shown.
+
+Scores combine must-haves (weight 3), nice-to-haves (weight 1) and location, plus a small bonus for GitHub stars and recent activity. People outside the role's cities (or outside the US for remote roles), and people meeting fewer than half of the checkable must-haves, are kept out of the queue. A language counts when it's one of someone's main languages on GitHub or listed as a skill on their profile.
 
 ## Before launching with real people's data
 

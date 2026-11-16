@@ -4,12 +4,13 @@
   publish = ".next"
 
 # Production builds first bring the database up to date with prisma/schema.prisma.
-# db push only makes changes that keep data: one that would lose data stops the
-# build and has to be applied by hand. Schema changes use Neon's direct
-# connection: DATABASE_URL_UNPOOLED if set, otherwise DATABASE_URL without
-# "-pooler" in the host.
+# prisma/pre-push.sql adds new unique columns safely first (see the notes in it);
+# then db push makes the remaining changes. db push only makes changes that keep
+# data: one that would lose data stops the build and has to be applied by hand.
+# Schema changes use Neon's direct connection: DATABASE_URL_UNPOOLED if set,
+# otherwise DATABASE_URL without "-pooler" in the host.
 [context.production]
-  command = "DATABASE_URL=\"${DATABASE_URL_UNPOOLED:-${DATABASE_URL/-pooler./.}}\" npx prisma db push --skip-generate && npm run build"
+  command = "DIRECT_URL=\"${DATABASE_URL_UNPOOLED:-${DATABASE_URL/-pooler./.}}\" && DATABASE_URL=\"$DIRECT_URL\" npx prisma db execute --file prisma/pre-push.sql --schema prisma/schema.prisma && DATABASE_URL=\"$DIRECT_URL\" npx prisma db push --skip-generate && npm run build"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

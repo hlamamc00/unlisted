@@ -2,7 +2,8 @@
 //
 // A recruiter (User) owns roles. Each Role holds the job description, the brief
 // read from it, and what the recruiter has taught it (skip rules, answers).
-// People are found from public sources (GitHub first) and stored once; a Match
+// People are found from public sources (GitHub, and LinkedIn profiles through
+// People Data Labs, a licensed data provider) and stored once; a Match
 // links a person to a role with a score, the reasons behind it and the
 // recruiter's decision. OptOut lists people who asked never to be included.
 
@@ -51,7 +52,15 @@ model Role {
 
 model Person {
   id          String   @id @default(cuid())
-  githubLogin String   @unique
+  /// Where we first found them: github | linkedin
+  source      String   @default("github")
+  githubLogin String?  @unique
+  /// "linkedin.com/in/<name>", lowercase (see src/lib/linkedin.ts)
+  linkedinUrl String?  @unique
+  /// People Data Labs' id for the person, when found through it
+  pdlId       String?  @unique
+  /// Current job title
+  headline    String?
   name        String?
   avatarUrl   String?
   location    String?
@@ -61,8 +70,12 @@ model Person {
   email       String?
   hireable    Boolean?
   followers   Int      @default(0)
-  /// True when a LinkedIn account is linked from the GitHub profile.
+  /// True when they have a LinkedIn profile we know of (linked from GitHub, or found on LinkedIn).
   hasLinkedIn Boolean  @default(false)
+  /// Skills listed on their professional profile
+  skills      Json     @default("[]")
+  /// Recent roles: [{ title, company, current }]
+  experience  Json     @default("[]")
   /// { [language]: number of owned repositories }
   languages   Json     @default("{}")
   /// Top owned repositories: [{ name, description, stars, language, topics, pushedAt, url }]
@@ -96,6 +109,7 @@ model Match {
 
 model OptOut {
   id          String   @id @default(cuid())
-  githubLogin String   @unique
+  githubLogin String?  @unique
+  linkedinUrl String?  @unique
   createdAt   DateTime @default(now())
 }

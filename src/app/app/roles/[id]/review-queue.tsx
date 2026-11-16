@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Brief, RoleContext } from "@/lib/brief";
+import { linkedInHref } from "@/lib/linkedin";
 import { fitLabel, fitLevel, type Check } from "@/lib/score";
 import { decide, deleteRole, draftMessage, findCandidates, removeLocationRule, type SkipReason } from "../../actions";
 
@@ -13,14 +14,14 @@ export type Item = {
   checks: Check[];
   evidence: { src: string; text: string }[];
   hasDraft: boolean;
-  person: { login: string; name: string | null; avatarUrl: string | null; location: string | null; company: string | null; email: string | null; blog: string | null; hasLinkedIn: boolean };
+  person: { login: string | null; linkedinUrl: string | null; headline: string | null; name: string | null; avatarUrl: string | null; location: string | null; company: string | null; email: string | null; blog: string | null; hasLinkedIn: boolean };
 };
 type Tab = Item["status"];
 type RoleView = { id: string; title: string; brief: Brief; context: RoleContext; excluded: string[] };
 
 const REASONS: [SkipReason, string][] = [["location", "Wrong location"], ["work", "Work isn't relevant"], ["known", "Already know them"], ["other", "Other"]];
 const TABS: [Tab, string][] = [["review", "To review"], ["approved", "Approved"], ["skipped", "Skipped"]];
-const initials = (p: Item["person"]) => (p.name || p.login).split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+const initials = (p: Item["person"]) => (p.name || p.login || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
 const mark = (s: Check["status"]) => (s === "yes" ? "✓" : s === "no" ? "✗" : "?");
 
 function Avatar({ person }: { person: Item["person"] }) {
@@ -105,6 +106,8 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
     context.pay || brief.payRange,
   ].filter(Boolean).join(" · ");
   const work = item?.evidence.filter((e) => e.src === "GitHub").slice(0, 2) ?? [];
+  const roles = item?.evidence.filter((e) => e.src === "Role" || e.src === "Before").slice(0, 2) ?? [];
+  const drawerPerson = drawer ? items.find((x) => x.id === drawer.id)?.person : undefined;
 
   return (
     <>
@@ -152,7 +155,7 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
             {cur.map((it) => (
               <button key={it.id} className="qrow" aria-current={it.id === item?.id} onClick={() => select(it.id)}>
                 <Avatar person={it.person} />
-                <span style={{ minWidth: 0 }}><b>{it.person.name || it.person.login}</b><small>{it.person.location || "Location not given"}</small></span>
+                <span style={{ minWidth: 0 }}><b>{it.person.name || it.person.login}</b><small>{[it.person.location || "Location not given", it.person.hasLinkedIn ? "On LinkedIn" : "Not on LinkedIn"].join(" · ")}</small></span>
                 <span className={`fit ${fitLevel(it.score)}`}>{fitLabel(it.score).split(" ")[0]}</span>
               </button>
             ))}
@@ -171,9 +174,14 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
                 <Avatar person={item.person} />
                 <div className="who" style={{ minWidth: 0 }}>
                   <h2>{item.person.name || item.person.login}</h2>
+                  {item.person.headline && <p>{item.person.headline}{item.person.company ? ` at ${item.person.company}` : ""}</p>}
                   <p>
-                    {item.person.location || "Location not given"} · <a href={`https://github.com/${item.person.login}`} target="_blank" rel="noreferrer">GitHub</a>
-                    {item.person.blog && <> · <a href={item.person.blog.startsWith("http") ? item.person.blog : `https://${item.person.blog}`} target="_blank" rel="noreferrer">Website</a></>}
+                    {[
+                      item.person.location || "Location not given",
+                      item.person.login && <a href={`https://github.com/${item.person.login}`} target="_blank" rel="noreferrer">GitHub</a>,
+                      item.person.linkedinUrl && <a href={linkedInHref(item.person.linkedinUrl)} target="_blank" rel="noreferrer">LinkedIn</a>,
+                      item.person.blog && <a href={item.person.blog.startsWith("http") ? item.person.blog : `https://${item.person.blog}`} target="_blank" rel="noreferrer">Website</a>,
+                    ].filter(Boolean).map((x, i) => <span key={i}>{i > 0 && " · "}{x}</span>)}
                   </p>
                   {!item.person.hasLinkedIn && <span className="badge">Not on LinkedIn</span>}
                 </div>
@@ -190,6 +198,13 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
                 <div className="work">
                   <div className="label">Best work</div>
                   <ul>{work.map((e) => <li key={e.text}>{e.text}</li>)}</ul>
+                </div>
+              )}
+
+              {!work.length && roles.length > 0 && (
+                <div className="work">
+                  <div className="label">Experience</div>
+                  <ul>{roles.map((e) => <li key={e.text}>{e.src === "Before" ? `Before: ${e.text}` : e.text}</li>)}</ul>
                 </div>
               )}
 
@@ -232,13 +247,14 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
               <h2 style={{ fontSize: 22 }}>First message</h2>
               <button className="btn small" onClick={() => setDrawer(null)}>Close</button>
             </div>
-            <p className="hint">Written from their public work. Edit it if you like, then send it from your own email.</p>
+            <p className="hint">Written from their public work and profile. Edit it if you like, then send it from your own email or as a LinkedIn message.</p>
             <textarea className="input" value={drawer.loading ? "Writing…" : drawer.text} disabled={drawer.loading} aria-label="Message"
               onChange={(e) => setDrawer({ ...drawer, text: e.target.value })} />
             <div className="row">
               <button className="btn primary" disabled={drawer.loading} onClick={async () => {
                 try { await navigator.clipboard.writeText(drawer.text); say("Copied"); } catch { say("Select the text and copy it with Ctrl+C"); }
               }}>Copy message</button>
+              {drawerPerson?.linkedinUrl && <a className="btn" href={linkedInHref(drawerPerson.linkedinUrl)} target="_blank" rel="noreferrer">Open their LinkedIn</a>}
             </div>
           </aside>
         </>
