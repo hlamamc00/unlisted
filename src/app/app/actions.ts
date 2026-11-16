@@ -10,6 +10,7 @@ import { draftMessageWithClaude, hasClaude, readBriefWithClaude } from "@/lib/cl
 import { fileToText } from "@/lib/jd-file";
 import { evidenceFor } from "@/lib/score";
 import { markForRescore, runSearch, toScorable, type SearchResult } from "@/lib/search";
+import { answerQuestion, startAgentRun, type Note } from "@/lib/agent";
 
 const MAX_JD_CHARS = 30_000;
 const json = (v: unknown) => v as Prisma.InputJsonValue;
@@ -52,19 +53,37 @@ export async function createRole(input: { jdText: string; brief: Brief; context:
     data: { userId: user.id, title: brief.title.slice(0, 120) || "New role", jdText: input.jdText.slice(0, MAX_JD_CHARS), brief: json(brief), context: json(context) },
   });
   try { await runSearch(role.id, user.id); } catch (e) { console.error("First search failed", e); }
+  await startAgentRun(role.id, "manual").catch((e) => console.error("The agent didn't start", e));
   redirect(`/app/roles/${role.id}`);
 }
 
-export async function findCandidates(roleId: string): Promise<SearchResult> {
+export type FindResult = SearchResult & { agent: { started: boolean; message?: string } };
+
+/** The quick search (results in seconds), and the agent, which keeps working in the background for a few minutes. */
+export async function findCandidates(roleId: string): Promise<FindResult> {
   const user = await requireUser();
-  try {
-    const result = await runSearch(roleId, user.id);
-    revalidatePath(`/app/roles/${roleId}`);
-    return result;
-  } catch (e) {
-    console.error("Search failed", e);
-    return { added: 0, looked: 0, message: "The search couldn't finish. Try again in a minute." };
-  }
+  if (!(await db.role.findFirst({ where: { id: roleId, userId: user.id }, select: { id: true } }))) throw new Error("Role not found");
+  let result: SearchResult;
+  try { result = await runSearch(roleId, user.id); }
+  catch (e) { console.error("Search failed", e); result = { added: 0, looked: 0, message: "The quick search couldn't finish." }; }
+  const agent = await startAgentRun(roleId, "manual").catch((e) => { console.error("The agent didn't start", e); return { runId: undefined, message: "The agent couldn't start." }; });
+  revalidatePath(`/app/roles/${roleId}`);
+  return { ...result, agent: { started: Boolean(agent.runId), message: agent.message } };
+}
+
+/** Yes or no to a question the agent asked. A yes changes the role's brief. */
+export async function answerAgentQuestion(roleId: string, questionId: string, yes: boolean) {
+  const user = await requireUser();
+  if (!(await db.role.findFirst({ where: { id: roleId, userId: user.id }, select: { id: true } }))) throw new Error("Role not found");
+  await answerQuestion(roleId, questionId, yes);
+  revalidatePath(`/app/roles/${roleId}`);
+}
+
+/** Switches the overnight top-up on or off for a role. */
+export async function setNightly(roleId: string, on: boolean) {
+  const user = await requireUser();
+  await db.role.updateMany({ where: { id: roleId, userId: user.id }, data: { nightly: on } });
+  revalidatePath(`/app/roles/${roleId}`);
 }
 
 async function ownMatch(matchId: string, userId: string) {
@@ -116,17 +135,18 @@ export async function draftMessage(matchId: string): Promise<{ draft: string; us
   const firstName = person.name?.split(" ")[0] || person.githubLogin || "there";
   const evidence = evidenceFor(toScorable(person)).map((e) => e.text);
   const pay = context.pay || brief.payRange;
+  const opener = (match.note as Note | null)?.opener || undefined;
 
   let body: string | null = null;
   if (hasClaude()) {
-    try { body = await draftMessageWithClaude({ firstName, roleTitle: brief.title, roleSummary: brief.summary, pay, evidence }); }
+    try { body = await draftMessageWithClaude({ firstName, roleTitle: brief.title, roleSummary: brief.summary, pay, evidence, opener }); }
     catch (e) { console.error("Claude couldn't draft the message; using the template", e); }
   }
   const usedClaude = Boolean(body);
   const topRepo = (person.topRepos as { name: string }[])[0]?.name;
   body ??= [
     `Hi ${firstName},`,
-    `${topRepo ? `I came across your work on GitHub, including ${topRepo}.` : person.headline ? `I came across your profile and your experience as ${person.headline}${person.company ? ` at ${person.company}` : ""}.` : "I came across your profile."} I'm hiring for a ${brief.title} role, and your background is close to what the team needs.${pay ? ` The pay range is ${pay}.` : ""}`,
+    `${opener ? opener : topRepo ? `I came across your work on GitHub, including ${topRepo}.` : person.headline ? `I came across your profile and your experience as ${person.headline}${person.company ? ` at ${person.company}` : ""}.` : "I came across your profile."} I'm hiring for a ${brief.title} role, and your background is close to what the team needs.${pay ? ` The pay range is ${pay}.` : ""}`,
     "Would you be open to a 15-minute call? If the timing's wrong, no problem.",
     "[Your name]",
   ].join("\n\n");

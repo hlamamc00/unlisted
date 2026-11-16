@@ -40,6 +40,7 @@ Open http://localhost:3000 and create an account.
 | `PDL_API_KEY` | Optional: a [People Data Labs](https://www.peopledatalabs.com) API key. Adds LinkedIn profiles to searches. Each profile returned uses one credit (up to 10 per click); the free plan has about 100 a month |
 | `APP_URL` | Your site's address, for example `https://unlisted.ai`. Used in the opt-out link in messages |
 | `PRIVACY_EMAIL` | The address people write to about their data, shown on the privacy page |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Optional: email recruiters when the agent finds new people, through [Resend](https://resend.com). `EMAIL_FROM` must use a domain verified with Resend |
 
 4. Deploy. Production builds run `prisma db push` first, so the database tables are created automatically.
 
@@ -51,6 +52,18 @@ Unlisted never scrapes LinkedIn itself: LinkedIn sues scrapers, and Proxycurl sh
 
 Scores combine must-haves (weight 3), nice-to-haves (weight 1) and location, plus a small bonus for GitHub stars and recent activity. People outside the role's cities (or outside the US for remote roles), and people meeting fewer than half of the checkable must-haves, are kept out of the queue. A language counts when it's one of someone's main languages on GitHub or listed as a skill on their profile.
 
+## The sourcing agent
+
+When a recruiter creates a role or clicks **Find candidates**, the quick search above shows the first people within seconds, and the sourcing agent starts in the background. It needs `ANTHROPIC_API_KEY`.
+
+- **Where it runs:** a Netlify background function (`netlify/functions/agent-background.mts`), which may run for up to 15 minutes. It only drives the conversation with Claude; every step goes through the app's own agent API (`src/app/api/agent`), which does the searching, checking and saving. The two authenticate with a per-run token derived from `AUTH_SECRET`.
+- **What it does:** it reads the brief and what the recruiter approved and skipped, plans searches on GitHub and LinkedIn, looks closely at promising people, and adds the best to the review list with a note on why they fit and an opening line for a message. The role page shows its progress live, and new candidates appear as they're added.
+- **Its checks:** every candidate it adds is checked by code, not by the model. Their location must fit the role, they must meet enough of the must-haves, and every piece of evidence the agent cites must appear in their actual profile. Anything else is rejected and the agent is told why.
+- **Questions:** when a choice would change the role, such as allowing remote, it asks instead of assuming. The recruiter answers Yes or No on the role page, and a Yes changes the brief.
+- **Limits per run:** 12 minutes, 30 tool calls, 30 people looked at, 8 GitHub searches, 20 LinkedIn profiles and 10 people added, plus 6 manual runs per role a day. Its prompt is cached between steps to keep costs down.
+- **Nightly top-up:** with "Keep searching every night" switched on under a role's Details, `netlify/functions/agent-nightly.mts` starts a run at 10:00 UTC each day, and the recruiter gets an email when there's someone new (with Resend set up).
+- **What it never does:** send messages, decide for the recruiter, or use or guess age, gender, race, religion, national origin, disability or visa status.
+
 ## Before launching with real people's data
 
 - Have a US privacy lawyer review the privacy notice and your obligations. Selling access to profiles of people you have no relationship with is likely to make you a data broker, which means registering in California, Texas, Vermont and Oregon and processing deletion requests from California's DROP system.
@@ -59,7 +72,6 @@ Scores combine must-haves (weight 3), nice-to-haves (weight 1) and location, plu
 
 ## Next
 
-- A daily search that emails new matches each morning (a Netlify scheduled function).
 - Using the "companies to target or avoid" and "someone like the person you want" answers in the search.
 - More sources: research papers (OpenAlex), US patents (PatentsView) and professional directories.
 - Sending from the recruiter's Gmail or Outlook, and a pipeline view.

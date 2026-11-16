@@ -3,7 +3,7 @@ import type { Person, Prisma } from "@prisma/client";
 import { db } from "./db";
 import type { Brief, RoleRules } from "./brief";
 import { GitHubError, fetchProfile, searchRepoOwners, searchUsers, type Profile, type Repo } from "./github";
-import { PdlError, hasPdl, searchLinkedIn, type Role } from "./pdl";
+import { PdlError, hasPdl, paramsFromBrief, searchLinkedIn, type Role } from "./pdl";
 import { scorePerson, type ScorablePerson } from "./score";
 
 type Query = { key: string; kind: "repos" | "users"; q: string };
@@ -58,14 +58,14 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
-type PersonFields = Omit<Prisma.PersonCreateInput, "matches">;
+export type PersonFields = Omit<Prisma.PersonCreateInput, "matches">;
 const KEYS = ["githubLogin", "linkedinUrl", "pdlId"] as const;
 
 /**
  * Saves a person found on GitHub or LinkedIn. Someone already stored under the same GitHub username,
  * LinkedIn address or PDL id is updated rather than duplicated, and fields this source doesn't have are kept.
  */
-async function savePerson(data: PersonFields): Promise<Person> {
+export async function savePerson(data: PersonFields): Promise<Person> {
   const or = KEYS.flatMap((k) => (data[k] ? [{ [k]: data[k] }] : []));
   const found = or.length ? await db.person.findMany({ where: { OR: or } }) : [];
   if (!found.length) return db.person.create({ data });
@@ -164,7 +164,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
   // LinkedIn, through People Data Labs.
   if (hasPdl() && !pdlDone) {
     try {
-      const found = await searchLinkedIn(brief, PDL_BATCH, pdlScroll);
+      const found = await searchLinkedIn(paramsFromBrief(brief), PDL_BATCH, pdlScroll);
       pdlScroll = found.scrollToken;
       pdlDone = !found.scrollToken || !found.people.length;
       for (const lp of found.people) {
@@ -191,7 +191,7 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
   return { added, looked, message: notes.length ? notes.join(" ") : undefined };
 }
 /** Score a person for a role and decide whether they belong in its queue. */
-function assess(person: Person, brief: Brief, rules: RoleRules) {
+export function assess(person: Person, brief: Brief, rules: RoleRules) {
   const { score, checks, outOfArea } = scorePerson(toScorable(person), brief);
   const excluded = rules.excludedLocations?.some((x) => person.location?.toLowerCase().includes(x.toLowerCase()));
   return { score, checks, status: score >= MIN_SCORE && !outOfArea && !excluded ? "review" : "filtered" };

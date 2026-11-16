@@ -28,18 +28,28 @@ export type LinkedInPerson = {
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
 const LEVELS = /\b(senior|sr|junior|jr|staff|lead|principal|head|chief|ii|iii|iv)\b\.?/gi;
 
-/** People in the US with a LinkedIn profile, in the right kind of job, listing the role's must-have languages. */
-export function buildPdlQuery(brief: Brief): object {
-  const title = brief.title.split(/[–—\-,(|:]/)[0].replace(LEVELS, " ").replace(/\s+/g, " ").trim().toLowerCase();
-  const langs = [...new Set(brief.criteria.filter((c) => c.importance === "must").flatMap((c) => c.languages).map((l) => l.toLowerCase()))];
-  const signals = [...new Set(brief.criteria.flatMap((c) => c.signals).map((s) => s.toLowerCase()).filter(Boolean))].slice(0, 12);
-  const cities = brief.locations.map((l) => l.split(",")[0].trim().toLowerCase()).filter(Boolean);
+/** What to look for on LinkedIn: job title words, skills that must be listed, cities (ignored when remote), skills that rank higher. */
+export type PdlSearch = { title: string; skills: string[]; cities: string[]; remote: boolean; boost: string[] };
 
+export function paramsFromBrief(brief: Brief): PdlSearch {
+  return {
+    title: brief.title.split(/[–—\-,(|:]/)[0].replace(LEVELS, " ").replace(/\s+/g, " ").trim(),
+    skills: [...new Set(brief.criteria.filter((c) => c.importance === "must").flatMap((c) => c.languages))],
+    cities: brief.locations.map((l) => l.split(",")[0].trim()).filter(Boolean),
+    remote: brief.remoteOk,
+    boost: [...new Set(brief.criteria.flatMap((c) => c.signals).filter(Boolean))].slice(0, 12),
+  };
+}
+
+/** People in the US with a LinkedIn profile, in the right kind of job, listing the must-have skills. */
+export function buildPdlQuery(s: PdlSearch): object {
+  const lower = (xs: string[]) => [...new Set(xs.map((x) => x.trim().toLowerCase()).filter(Boolean))];
+  const title = s.title.replace(LEVELS, " ").replace(/\s+/g, " ").trim().toLowerCase();
   const must: object[] = [{ term: { location_country: "united states" } }, { exists: { field: "linkedin_url" } }];
   if (title) must.push({ match: { job_title: title } });
-  if (langs.length) must.push({ terms: { skills: langs } });
-  if (cities.length && !brief.remoteOk) must.push({ bool: { should: cities.map((c) => ({ match: { location_locality: c } })) } });
-  return { bool: { must, should: signals.map((s) => ({ match_phrase: { skills: s } })) } };
+  if (s.skills.length) must.push({ terms: { skills: lower(s.skills) } });
+  if (s.cities.length && !s.remote) must.push({ bool: { should: lower(s.cities).map((c) => ({ match: { location_locality: c } })) } });
+  return { bool: { must, should: lower(s.boost).slice(0, 12).map((b) => ({ match_phrase: { skills: b } })) } };
 }
 
 function toPerson(p: PdlPerson): LinkedInPerson | null {
@@ -63,12 +73,12 @@ function toPerson(p: PdlPerson): LinkedInPerson | null {
   };
 }
 
-/** One page of LinkedIn profiles for a brief. Pass the returned scrollToken to get the next page. */
-export async function searchLinkedIn(brief: Brief, size: number, scrollToken?: string | null) {
+/** One page of LinkedIn profiles. Pass the returned scrollToken to get the next page of the same search. */
+export async function searchLinkedIn(search: PdlSearch, size: number, scrollToken?: string | null) {
   const res = await fetch(API, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Api-Key": process.env.PDL_API_KEY ?? "" },
-    body: JSON.stringify({ query: buildPdlQuery(brief), size, titlecase: true, ...(scrollToken ? { scroll_token: scrollToken } : {}) }),
+    body: JSON.stringify({ query: buildPdlQuery(search), size, titlecase: true, ...(scrollToken ? { scroll_token: scrollToken } : {}) }),
     cache: "no-store",
   });
   if (res.status === 404) return { people: [], scrollToken: null, total: 0 }; // PDL answers 404 when nothing matches

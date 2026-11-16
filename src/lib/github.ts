@@ -45,12 +45,21 @@ export async function searchUsers(q: string, page: number): Promise<string[]> {
   return r.items.filter((u) => u.type === "User").map((u) => u.login);
 }
 
-/** Owners of repositories matching a phrase: people found through what they've built. */
-export async function searchRepoOwners(q: string, page: number): Promise<string[]> {
-  const r = await gh<{ items: { owner: GhAccount }[] }>(
+export type RepoHit = { owner: string; name: string; description: string | null; stars: number; language: string | null };
+
+/** Repositories matching a search, owned by people rather than organizations. */
+export async function searchRepos(q: string, page: number): Promise<RepoHit[]> {
+  const r = await gh<{ items: { owner: GhAccount; name: string; description: string | null; stargazers_count: number; language: string | null }[] }>(
     `/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=30&page=${page}`,
   );
-  return [...new Set(r.items.filter((i) => i.owner.type === "User").map((i) => i.owner.login))];
+  return r.items
+    .filter((i) => i.owner.type === "User")
+    .map((i) => ({ owner: i.owner.login, name: i.name, description: i.description, stars: i.stargazers_count, language: i.language }));
+}
+
+/** Owners of repositories matching a phrase: people found through what they've built. */
+export async function searchRepoOwners(q: string, page: number): Promise<string[]> {
+  return [...new Set((await searchRepos(q, page)).map((r) => r.owner))];
 }
 
 export type Repo = { name: string; description: string | null; stars: number; language: string | null; topics: string[]; pushedAt: string; url: string };

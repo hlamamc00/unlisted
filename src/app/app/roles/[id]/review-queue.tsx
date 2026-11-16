@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import type { Brief, RoleContext } from "@/lib/brief";
 import { linkedInHref } from "@/lib/linkedin";
 import { fitLabel, fitLevel, type Check } from "@/lib/score";
-import { decide, deleteRole, draftMessage, findCandidates, removeLocationRule, type SkipReason } from "../../actions";
+import type { Note, Question } from "@/lib/agent";
+import { answerAgentQuestion, decide, deleteRole, draftMessage, findCandidates, removeLocationRule, setNightly, type SkipReason } from "../../actions";
 
 export type Item = {
   id: string;
@@ -14,10 +15,13 @@ export type Item = {
   checks: Check[];
   evidence: { src: string; text: string }[];
   hasDraft: boolean;
+  note: Note | null;
   person: { login: string | null; linkedinUrl: string | null; headline: string | null; name: string | null; avatarUrl: string | null; location: string | null; company: string | null; email: string | null; blog: string | null; hasLinkedIn: boolean };
 };
 type Tab = Item["status"];
 type RoleView = { id: string; title: string; brief: Brief; context: RoleContext; excluded: string[] };
+export type RunView = { id: string; status: string; progress: string; added: number; looked: number; summary: string | null; error: string | null; createdAt: string };
+export type AgentView = { enabled: boolean; nightly: boolean; run: RunView | null; questions: Question[] };
 
 const REASONS: [SkipReason, string][] = [["location", "Wrong location"], ["work", "Work isn't relevant"], ["known", "Already know them"], ["other", "Other"]];
 const TABS: [Tab, string][] = [["review", "To review"], ["approved", "Approved"], ["skipped", "Skipped"]];
@@ -29,7 +33,7 @@ function Avatar({ person }: { person: Item["person"] }) {
   return <span className="avatar" aria-hidden="true">{person.avatarUrl ? <img src={person.avatarUrl} alt="" /> : initials(person)}</span>;
 }
 
-export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) {
+export function ReviewQueue({ role, items, agent }: { role: RoleView; items: Item[]; agent: AgentView }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("review");
   const [overrides, setOverrides] = useState<Record<string, Tab>>({});
@@ -41,6 +45,12 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
   const [searching, startSearch] = useTransition();
   const [drawer, setDrawer] = useState<{ id: string; text: string; loading: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [run, setRun] = useState<RunView | null>(agent.run);
+  const [questions, setQuestions] = useState<Question[]>(agent.questions);
+  const [nightly, setNightlyOn] = useState(agent.nightly);
+  const [hideRunNote, setHideRunNote] = useState(false);
+  const lastAdded = useRef(agent.run?.added ?? 0);
+  const active = run?.status === "queued" || run?.status === "running";
 
   const say = useCallback((msg: string) => {
     setToast(msg);
@@ -70,9 +80,45 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
 
   const find = () => startSearch(async () => {
     const r = await findCandidates(role.id);
-    say(r.message ?? (r.added ? `Found ${r.added} new candidate${r.added === 1 ? "" : "s"}` : `Looked at ${r.looked} people; none were strong enough. Try again for more.`));
+    const quick = r.added ? `Found ${r.added} right away.` : r.message ?? "";
+    say([quick, r.agent.started ? "The agent is searching for more in the background." : r.agent.message].filter(Boolean).join(" ") || "No strong matches yet.");
+    if (r.agent.started) {
+      lastAdded.current = 0;
+      setHideRunNote(false);
+      setRun({ id: "", status: "queued", progress: "Starting", added: 0, looked: 0, summary: null, error: null, createdAt: new Date().toISOString() });
+    }
     router.refresh();
   });
+
+  // While the agent works, check on it every few seconds; new candidates appear as it adds them.
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(async () => {
+      const res = await fetch(`/api/roles/${role.id}/agent`, { cache: "no-store" }).catch(() => null);
+      if (!res?.ok) return;
+      const data = (await res.json()) as { run: RunView | null; questions: Question[] };
+      setQuestions(data.questions);
+      if (!data.run) return;
+      setRun(data.run);
+      const finished = data.run.status === "done" || data.run.status === "failed";
+      if (data.run.added !== lastAdded.current || finished) { lastAdded.current = data.run.added; router.refresh(); }
+      if (data.run.status === "done") say(`The agent finished and added ${data.run.added} ${data.run.added === 1 ? "person" : "people"}.`);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [active, role.id, router, say]);
+
+  const answer = async (q: Question, yes: boolean) => {
+    setQuestions((qs) => qs.filter((x) => x.id !== q.id));
+    await answerAgentQuestion(role.id, q.id, yes);
+    say(yes ? "Updated the role. Click Find candidates to search with the change." : "Noted. The agent won't ask that again.");
+    router.refresh();
+  };
+
+  const toggleNightly = async (on: boolean) => {
+    setNightlyOn(on);
+    await setNightly(role.id, on);
+    say(on ? "The agent will keep searching every night." : "Nightly search is off.");
+  };
 
   const openMessage = async (it: Item) => {
     setDrawer({ id: it.id, text: "", loading: true });
@@ -135,6 +181,12 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
               {context.avoid && <span className="chip ctx">Target or avoid: {context.avoid}</span>}
               {context.like && <span className="chip ctx">Like: {context.like}</span>}
             </div>
+            {agent.enabled && (
+              <label className="row hint" style={{ gap: 8 }}>
+                <input type="checkbox" checked={nightly} onChange={(e) => toggleNightly(e.target.checked)} />
+                Keep searching every night, and email me when there&apos;s someone new
+              </label>
+            )}
             <div className="row">
               {confirmDelete
                 ? <><button className="btn small" onClick={() => deleteRole(role.id)}>Delete this role</button><button className="btn small" onClick={() => setConfirmDelete(false)}>Keep it</button></>
@@ -143,6 +195,26 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
           </div>
         )}
       </div>
+
+      {run && (active || (!hideRunNote && Date.now() - Date.parse(run.createdAt) < 12 * 3_600_000)) && (
+        <div className={`agent-bar${active ? " running" : ""}`} role="status">
+          {active
+            ? <><span className="pulse" aria-hidden="true" /><span><b>Agent searching:</b> {run.progress}{run.added ? ` · ${run.added} added so far` : ""}</span></>
+            : run.status === "failed"
+              ? <span><b>The agent stopped:</b> {run.error ?? "Something went wrong."} Try Find candidates again.</span>
+              : <span><b>Agent:</b> {run.summary}</span>}
+          {!active && <button className="chip-x" aria-label="Hide" onClick={() => setHideRunNote(true)}>×</button>}
+        </div>
+      )}
+      {questions.map((q) => (
+        <div key={q.id} className="panel question">
+          <span><b>The agent asks:</b> {q.text}</span>
+          <div className="row">
+            <button className="btn small primary" onClick={() => answer(q, true)}>Yes</button>
+            <button className="btn small" onClick={() => answer(q, false)}>No</button>
+          </div>
+        </div>
+      ))}
 
       <div className="review">
         <aside className="panel queue" aria-label="Candidates">
@@ -166,7 +238,7 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
         <section className="panel detail" aria-live="polite">
           {!item ? (
             <div className="empty">
-              {searching ? "Searching GitHub for people whose work fits this role…" : tab === "review" ? "You've seen everyone found so far. Click Find candidates to look for more." : "Nothing here yet."}
+              {searching ? "Searching for people whose work fits this role…" : active && tab === "review" ? "The agent is searching. New people appear here as it finds them." : tab === "review" ? "You've seen everyone found so far. Click Find candidates to look for more." : "Nothing here yet."}
             </div>
           ) : (
             <>
@@ -193,6 +265,14 @@ export function ReviewQueue({ role, items }: { role: RoleView; items: Item[] }) 
                   <span key={c.label} className={`fitchip ${c.status}`} title={[c.label, c.detail].filter(Boolean).join(": ")}>{mark(c.status)} {c.label}</span>
                 ))}
               </div>
+
+              {item.note && (
+                <div className="agent-note">
+                  <div className="label">Why they fit</div>
+                  <p>{item.note.why}</p>
+                  {item.note.opener && <p className="hint">Opening line: &ldquo;{item.note.opener}&rdquo;</p>}
+                </div>
+              )}
 
               {work.length > 0 && (
                 <div className="work">

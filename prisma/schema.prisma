@@ -43,9 +43,14 @@ model Role {
   /// Which GitHub result pages have been read, per query, so "Find more" moves on.
   searchState  Json      @default("{}")
   lastSearchAt DateTime?
+  /// Keep the agent searching every night for this role.
+  nightly      Boolean   @default(false)
+  /// Questions the agent asked: [{ id, text, change, status: open | yes | no, askedAt }]
+  questions    Json      @default("[]")
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   matches      Match[]
+  runs         AgentRun[]
 
   @@index([userId])
 }
@@ -100,6 +105,10 @@ model Match {
   status     String   @default("review")
   skipReason String?
   draft      String?  @db.Text
+  /// search | agent
+  foundBy    String   @default("search")
+  /// The agent's note: { why, opener, evidence: string[] }
+  note       Json?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -112,4 +121,29 @@ model OptOut {
   githubLogin String?  @unique
   linkedinUrl String?  @unique
   createdAt   DateTime @default(now())
+}
+
+/// One run of the sourcing agent for a role, started by the recruiter or by the nightly top-up.
+model AgentRun {
+  id         String    @id @default(cuid())
+  roleId     String
+  role       Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  /// manual | nightly
+  trigger    String    @default("manual")
+  /// queued | running | done | failed
+  status     String    @default("queued")
+  /// What it's doing now, shown live on the role page.
+  progress   String    @default("Starting")
+  /// Recent steps, oldest first: [{ at, text }]
+  steps      Json      @default("[]")
+  /// What it has used, checked against its limits: { toolCalls, lookups, pdlProfiles, githubSearches }
+  usage      Json      @default("{}")
+  added      Int       @default(0)
+  looked     Int       @default(0)
+  summary    String?   @db.Text
+  error      String?
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([roleId, createdAt])
 }

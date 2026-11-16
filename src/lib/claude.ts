@@ -51,6 +51,8 @@ export type DraftInput = {
   roleSummary: string;
   pay?: string | null;
   evidence: string[];
+  /** A suggested opening line from the sourcing agent, based on their work. */
+  opener?: string;
 };
 
 /** Drafts a first message citing the person's work. Returns null when Claude declines. */
@@ -63,7 +65,7 @@ export async function draftMessageWithClaude(input: DraftInput): Promise<string 
     system: DRAFT_SYSTEM,
     messages: [{
       role: "user",
-      content: `Name: ${input.firstName}\nRole: ${input.roleTitle}\nAbout the role: ${input.roleSummary}\nPay: ${input.pay || "not given"}\nTheir public work:\n${input.evidence.map((e) => `- ${e}`).join("\n")}`,
+      content: `Name: ${input.firstName}\nRole: ${input.roleTitle}\nAbout the role: ${input.roleSummary}\nPay: ${input.pay || "not given"}\nTheir public work:\n${input.evidence.map((e) => `- ${e}`).join("\n")}${input.opener ? `\nSuggested opening line, based on their work: ${input.opener}` : ""}`,
     }],
   });
   if (res.stop_reason === "refusal") return null;
