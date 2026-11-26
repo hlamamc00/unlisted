@@ -1,16 +1,18 @@
 # Unlisted
 
-Unlisted helps recruiters find candidates, including the ones they can't find on LinkedIn. A recruiter uploads or pastes a job description, Claude turns it into a brief, and Unlisted searches two sources: GitHub, for people found through their public work (many of them not on LinkedIn), and LinkedIn profiles through People Data Labs, a licensed data provider. Recruiters review each candidate against the brief with the evidence shown, approve or skip them, and draft a first message that cites the person's work.
+Unlisted helps recruiters find candidates, including the ones they can't find on LinkedIn. A recruiter says who they want in one line ("data analyst in Alpharetta, Georgia who worked at HP"), Unlisted shows the filters it understood, and on **Run search** it looks in two places: LinkedIn profiles through People Data Labs, a licensed data provider, and GitHub, for people found through their public work (many of them not on LinkedIn). Matches come back as profile cards with their work history and how they fit. The recruiter shortlists or hides each one, then drafts a first message that cites the person's work.
 
 ## What it does
 
 - **Recruiter accounts:** sign up, log in and log out. Passwords are hashed with bcrypt and sessions are signed cookies.
 - **Today:** one page showing what needs the recruiter across their roles: people to review, follow-ups due, people waiting to reply and questions from the agent.
-- **Roles from a job description:** PDF, Word (.docx), text or pasted. Claude reads it into must-haves, nice-to-haves, locations, pay, work authorization and search terms. The recruiter adjusts them, and can add the pay range, companies to look in, companies to avoid and an example person. Requirements can be edited later under **Role details**.
-- **Candidates from three places:** GitHub (people found through their public work), LinkedIn profiles through People Data Labs, and people already found for other roles who fit this one. Anyone can also be added by pasting their GitHub or LinkedIn link.
-- **Review:** each person is checked line by line against the brief, with the evidence. Approve or skip with a reason (shortcuts: J/K, A, S then 1–4, M). Skipping for location teaches the role.
-- **The sourcing agent:** starts as soon as a role is created, shows live progress, asks before changing the role, and can keep searching every night. See below.
-- **Pipeline:** approved people move through To contact, Contacted, Replied, Interviewing, Offer and Hired, with private notes and a message history.
+- **One box to start a search,** five ways: describe who you want in a line, paste or upload a job description (PDF, Word or text), paste a Boolean string, paste the profile of someone to find more like, or set the filters by hand.
+- **Filters you can check before searching:** job titles, places, employers the person works at or used to work at, minimum years of experience, and words that rule a job title out. Skills and other requirements are **criteria** that rank the matches, each marked must-have or nice to have. Both can be edited later, or changed in plain words ("only people who worked at Dell").
+- **Any profession:** analysts, nurses and sales people are found through LinkedIn profiles; people who write code are also found through GitHub.
+- **Candidates from three places:** LinkedIn profiles through People Data Labs, GitHub (people found through their public work), and people already found for other searches who fit this one. Anyone can also be added by pasting their GitHub or LinkedIn link.
+- **Matches as cards:** who they are, how they fit each filter and requirement, and their work history with dates. **Hide** or **Shortlist** in one click; a reason for hiding is optional, and "wrong location" teaches the search. **Review** shows one person at a time with keyboard shortcuts (J/K, A, H then 1–4, M).
+- **Calibration and the sourcing agent:** the first matches calibrate the search. Once the recruiter finishes calibrating, the agent (when it's switched on) looks for more people like the shortlist, shows live progress, asks before changing the search, and can keep searching every night. See below.
+- **Shortlist:** shortlisted people move through To contact, Contacted, Replied, Interviewing, Offer and Hired, with private notes and a message history.
 - **Messages:** Claude writes a first message from the person's work, signed with the recruiter's name and their scheduling link. With Resend set up it can be emailed from Unlisted (replies go to the recruiter's inbox); otherwise it's copied. A follow-up is suggested after 4 days without a reply, and a second 5 days later.
 - **Hiring manager link:** a link to the shortlist that works without an account for two weeks. Their yes or no and comments show on each candidate and are given to the agent.
 - **Export:** the pipeline as a CSV file.
@@ -42,7 +44,7 @@ Open http://localhost:3000 and create an account.
 | `AUTH_SECRET` | At least 32 random characters. Generate one with `openssl rand -base64 48` |
 | `ANTHROPIC_API_KEY` | From console.anthropic.com. Lets Claude read job descriptions and draft messages |
 | `GITHUB_TOKEN` | A GitHub personal access token with no scopes. Raises GitHub's limits from 60 to 5,000 requests an hour |
-| `PDL_API_KEY` | Optional: a [People Data Labs](https://www.peopledatalabs.com) API key. Adds LinkedIn profiles to searches. Each profile returned uses one credit (up to 10 per click); the free plan has about 100 a month |
+| `PDL_API_KEY` | A [People Data Labs](https://www.peopledatalabs.com) API key. Adds LinkedIn profiles to searches, and is needed for every search that isn't about people who publish code (an analyst, a nurse, anyone from a named employer). Each profile returned uses one credit (up to 10 per search); the free plan has about 100 a month |
 | `APP_URL` | Your site's address, for example `https://unlisted.ai`. Used in the opt-out link in messages |
 | `PRIVACY_EMAIL` | The address people write to about their data, shown on the privacy page |
 | `RESEND_API_KEY`, `EMAIL_FROM` | Optional: lets recruiters email candidates from Unlisted, and emails them when the agent finds new people, through [Resend](https://resend.com). `EMAIL_FROM` must use a domain verified with Resend |
@@ -51,11 +53,13 @@ Open http://localhost:3000 and create an account.
 
 ## How the search works
 
-Each click on **Find candidates** runs a small batch, which keeps it inside a web request's time limit: up to 3 GitHub searches and 12 people, plus up to 10 LinkedIn profiles from People Data Labs when `PDL_API_KEY` is set. People found but not yet looked at are kept for the next click.
+What the recruiter types is read into a brief (`src/lib/brief.ts`): job titles, employers, places, minimum years, title words to leave out, ranking criteria and, for code roles, GitHub search terms. Claude does the reading when `ANTHROPIC_API_KEY` is set; without it a keyword reader handles one-line requests and simple job descriptions. Boolean strings are always read by code, so they mean exactly what was typed.
+
+Each **Run search** or **Find more** runs a small batch, which keeps it inside a web request's time limit: up to 10 LinkedIn profiles from People Data Labs when `PDL_API_KEY` is set, and, for roles where people publish code, up to 3 GitHub searches and 12 people. People found but not yet looked at are kept for the next click. The LinkedIn search asks People Data Labs for people in the US whose current title contains one of the job titles, in the search's places, who work or used to work at the named employers, with at least the minimum years of experience. A search that names employers or isn't about code doesn't use GitHub, because GitHub profiles rarely say where someone has worked.
 
 Unlisted never scrapes LinkedIn itself: LinkedIn sues scrapers, and Proxycurl shut down in 2025 after it was sued. Someone found on both GitHub and LinkedIn is stored once, and every candidate is marked **On LinkedIn** or **Not on LinkedIn**. Profiles are cached for a week. People who opted out are never fetched or shown.
 
-Scores combine must-haves (weight 3), nice-to-haves (weight 1) and location, plus a small bonus for GitHub stars and recent activity. People outside the role's cities (or outside the US for remote roles), and people meeting fewer than half of the checkable must-haves, are kept out of the queue. A language counts when it's one of someone's main languages on GitHub or listed as a skill on their profile.
+Scores combine the job title, required employers, minimum years and must-have criteria (weight 3 each), nice-to-haves (weight 1) and location, plus a small bonus for GitHub stars and recent activity. Kept out of the matches: people outside the search's places (or outside the US for remote searches), people who never worked at a required employer, people whose title has a word the recruiter ruled out or is a different job, and people meeting fewer than half of the checkable must-haves. People found only through their code have no job title or work history on record, so those checks show as unknown rather than counting against them. A language counts when it's one of someone's main languages on GitHub or listed as a skill on their profile. Education and graduation dates are never collected.
 
 ## Messages and email
 
@@ -63,14 +67,14 @@ Messages always end with an opt-out line, and with the recruiter's business addr
 
 ## The sourcing agent
 
-The agent is paused for every recruiter until they turn it on under **Settings**, because each run costs money; pausing it again stops a run that's already going. Once it's on, when a recruiter creates a role or clicks **Find candidates**, the quick search above shows the first people within seconds, and the sourcing agent starts in the background. It needs `ANTHROPIC_API_KEY`.
+The agent is paused for every recruiter until they turn it on under **Settings**, because each run costs money; pausing it again stops a run that's already going. It also waits for calibration: a new search shows a **Calibrating** bar until the recruiter has shortlisted or hidden some of the first matches and clicks **Finish calibrating**. From then on, the agent starts in the background when the recruiter finishes calibrating or clicks **Find more**, while the quick search above shows people within seconds. It needs `ANTHROPIC_API_KEY`.
 
 - **Where it runs:** a Netlify background function (`netlify/functions/agent-background.mts`), which may run for up to 15 minutes. It only drives the conversation with Claude; every step goes through the app's own agent API (`src/app/api/agent`), which does the searching, checking and saving. The two authenticate with a per-run token derived from `AUTH_SECRET`.
-- **What it does:** it reads the brief and what the recruiter approved and skipped, plans searches on GitHub and LinkedIn, looks closely at promising people, and adds the best to the review list with a note on why they fit and an opening line for a message. The role page shows its progress live, and new candidates appear as they're added.
-- **Its checks:** every candidate it adds is checked by code, not by the model. Their location must fit the role, they must meet enough of the must-haves, and every piece of evidence the agent cites must appear in their actual profile. Anything else is rejected and the agent is told why.
+- **What it does:** it reads the brief and who the recruiter shortlisted and hid, plans searches on LinkedIn and (for code roles) GitHub, looks closely at promising people, and adds the best to the matches with a note on why they fit and an opening line for a message. The search page shows its progress live, and new candidates appear as they're added.
+- **Its checks:** every candidate it adds is checked by code, not by the model. Their location, employers and job title must fit the search, they must meet enough of the must-haves, and every piece of evidence the agent cites must appear in their actual profile. Anything else is rejected and the agent is told why.
 - **Questions:** when a choice would change the role, such as allowing remote, it asks instead of assuming. The recruiter answers Yes or No on the role page, and a Yes changes the brief.
 - **Limits per run:** 12 minutes, 30 tool calls, 30 people looked at, 8 GitHub searches, 20 LinkedIn profiles and 10 people added, plus 6 manual runs per role a day. Its prompt is cached between steps to keep costs down.
-- **Nightly top-up:** with "Keep searching every night" switched on under a role's Details, `netlify/functions/agent-nightly.mts` starts a run at 10:00 UTC each day, and the recruiter gets an email when there's someone new (with Resend set up).
+- **Nightly top-up:** with "Keep searching every night" switched on under a search's Details (calibrated searches only), `netlify/functions/agent-nightly.mts` starts a run at 10:00 UTC each day, and the recruiter gets an email when there's someone new (with Resend set up).
 - **What it never does:** send messages, decide for the recruiter, or use or guess age, gender, race, religion, national origin, disability or visa status.
 
 ## Before launching with real people's data

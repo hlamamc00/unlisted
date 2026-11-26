@@ -54,6 +54,9 @@ model Role {
   nightly      Boolean   @default(false)
   /// Questions the agent asked: [{ id, text, change, status: open | yes | no, askedAt }]
   questions    Json      @default("[]")
+  /// When the recruiter finished calibrating: they reviewed the first candidates and let the agent
+  /// start. Until then the agent doesn't run for this role.
+  calibratedAt   DateTime?
   /// Lets a hiring manager review the shortlist without an account, until shareExpiresAt.
   shareToken     String?   @unique
   shareExpiresAt DateTime?
@@ -89,8 +92,10 @@ model Person {
   hasLinkedIn Boolean  @default(false)
   /// Skills listed on their professional profile
   skills      Json     @default("[]")
-  /// Recent roles: [{ title, company, current }]
+  /// Recent roles: [{ title, company, current, start, end }] (dates as "2019-10" when known)
   experience  Json     @default("[]")
+  /// Years of work experience, as estimated by the profile data provider
+  yearsExperience Int?
   /// { [language]: number of owned repositories }
   languages   Json     @default("{}")
   /// Top owned repositories: [{ name, description, stars, language, topics, pushedAt, url }]

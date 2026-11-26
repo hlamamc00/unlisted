@@ -1,99 +1,149 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
-import type { Brief } from "@/lib/brief";
-import { createRole, readJobDescription, type ReadResult, type RoleExtras } from "../../actions";
+import Link from "next/link";
+import { emptyBrief, findableOnGithub, isSearchable, type Brief } from "@/lib/brief";
+import { createRole, readSearch, type ReadResult, type RoleExtras, type SearchMode } from "../../actions";
+import { CriteriaForm, FiltersForm, SearchSentence } from "../search-parts";
 
-const SAMPLE = `Senior Rust Engineer – Trading Systems
-Northfold Markets · Chicago, IL · 3 days a week in the office
+type Mode = SearchMode | "manual";
+const MODES: [Mode, string][] = [["describe", "Describe"], ["jd", "Job description"], ["similar", "Find similar"], ["boolean", "Boolean"], ["manual", "Set filters myself"]];
+const EXAMPLES = ["data analyst in Alpharetta, Georgia who worked at HP", "registered nurse in Austin, TX with 5+ years", "senior Rust engineer in Chicago who has built trading systems"];
+const BOOLEAN_EXAMPLE = '("data analyst" OR "BI analyst") AND (SQL OR Tableau) NOT manager';
 
-About us
-Northfold is a fast-growing market maker trading on 40 venues worldwide.
-
-What you'll need
-- 6+ years of professional software engineering, at least 3 in Rust
-- Experience building low-latency or high-throughput systems, ideally in trading or exchanges
-- Authorized to work in the US. We can't sponsor visas for this role.
-
-Nice to have
-- Contributions to open-source async runtimes or networking crates
-
-What we offer
-- Base salary $200,000–$250,000 plus annual bonus
-- Medical, dental and vision coverage, and a 401(k) with a 6% match`;
-
-export function NewRole() {
-  const [read, readAction, reading] = useActionState<ReadResult, FormData>(readJobDescription, {});
+/** One box to say who you want, then a check of what was understood before anything is searched. */
+export function NewSearch({ linkedIn, claude }: { linkedIn: boolean; claude: boolean }) {
+  const [read, readAction, reading] = useActionState<ReadResult, FormData>(readSearch, {});
+  const [mode, setMode] = useState<Mode>("describe");
   const [text, setText] = useState("");
+  const [manual, setManual] = useState(0); // a counter, so "Set filters myself" starts blank each time
+  const [dismissed, setDismissed] = useState<number | undefined>(undefined); // the reading the recruiter started over from
+  const pick = (m: Mode) => { setMode(m); setText(""); setDismissed(read.at); if (m === "manual") setManual((n) => n + 1); };
+  // Enter runs a one-line request; Shift+Enter makes a new line.
+  const submitOnEnter = (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && mode !== "jd") { e.preventDefault(); e.currentTarget.form?.requestSubmit(); }
+  };
+
   return (
     <>
-      <form action={readAction} className="panel form-grid">
-        <div className="step-title"><span className="step-n">1</span> The job description</div>
-        <div className="row">
-          <label className="btn">
-            Upload a file
-            <input type="file" name="file" accept=".pdf,.docx,.txt,.md,text/plain,application/pdf" hidden
-              onChange={(e) => e.currentTarget.form?.requestSubmit()} />
-          </label>
-          <button type="button" className="btn" onClick={() => setText(SAMPLE)}>Try a sample</button>
-          <span className="hint">PDF, Word (.docx) or text</span>
+      <form action={readAction} className="panel ask">
+        <input type="hidden" name="mode" value={mode} />
+        <div className="modes" role="tablist" aria-label="How to say who you want">
+          {MODES.map(([m, label]) => <button key={m} type="button" role="tab" className="mode" aria-selected={mode === m} onClick={() => pick(m)}>{label}</button>)}
         </div>
-        <label className="field">
-          <span className="label">Or paste it here</span>
-          <textarea name="text" value={text} onChange={(e) => setText(e.target.value)}
-            placeholder="Paste the job description, or describe who you need the way you'd tell a colleague" />
-        </label>
-        {read.error && <p className="error" role="alert">{read.error}</p>}
-        <div><button className="btn primary" disabled={reading}>{reading ? "Reading…" : "Read it"}</button></div>
+
+        {mode === "describe" && (
+          <>
+            <div className="ask-box">
+              <textarea name="text" rows={2} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={submitOnEnter} autoFocus
+                placeholder="Describe who you're looking for…" aria-label="Who you're looking for" />
+              <button className="btn primary" disabled={reading || text.trim().length < 3}>{reading ? "Reading…" : "Continue"}</button>
+            </div>
+            <div className="examples">
+              <span className="hint">Try:</span>
+              {EXAMPLES.map((x) => <button key={x} type="button" className="example" onClick={() => setText(x)}>{x}</button>)}
+            </div>
+          </>
+        )}
+
+        {mode === "jd" && (
+          <>
+            <label className="field">
+              <span className="sr-only">Job description</span>
+              <textarea name="text" value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste the job description here" />
+            </label>
+            <div className="row">
+              <button className="btn primary" disabled={reading || text.trim().length < 3}>{reading ? "Reading…" : "Continue"}</button>
+              <label className="btn">
+                Upload a file
+                <input type="file" name="file" accept=".pdf,.docx,.txt,.md,text/plain,application/pdf" hidden onChange={(e) => e.currentTarget.form?.requestSubmit()} />
+              </label>
+              <span className="hint">PDF, Word (.docx) or text</span>
+            </div>
+          </>
+        )}
+
+        {mode === "similar" && (
+          <>
+            <div className="ask-box">
+              <input name="text" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={submitOnEnter} autoFocus
+                placeholder="Paste a GitHub or LinkedIn profile link" aria-label="Profile link" />
+              <button className="btn primary" disabled={reading || text.trim().length < 3}>{reading ? "Reading…" : "Continue"}</button>
+            </div>
+            <p className="hint">Unlisted reads their job title and skills and looks for people with a similar background.{linkedIn ? " Reading a LinkedIn profile uses one People Data Labs credit." : " LinkedIn links need People Data Labs connected; GitHub links work now."}</p>
+          </>
+        )}
+
+        {mode === "boolean" && (
+          <>
+            <div className="ask-box">
+              <textarea name="text" rows={2} className="mono" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={submitOnEnter} autoFocus
+                placeholder={BOOLEAN_EXAMPLE} aria-label="Boolean search" spellCheck={false} />
+              <button className="btn primary" disabled={reading || text.trim().length < 3}>{reading ? "Reading…" : "Continue"}</button>
+            </div>
+            <p className="hint">Use AND, OR and NOT in capitals, with phrases in quotes. The group that names jobs becomes the job titles, and NOT rules out job titles. <button type="button" className="link" onClick={() => setText(BOOLEAN_EXAMPLE)}>Use the example</button></p>
+          </>
+        )}
+
+        {mode === "manual" && <p className="hint">Fill in the filters below. Only a job title or one requirement is needed.</p>}
+        {read.error && mode !== "manual" && <p className="error" role="alert">{read.error}</p>}
       </form>
-      {read.brief && read.jdText && <BriefEditor key={read.jdText} initial={read.brief} jdText={read.jdText} usedClaude={!!read.usedClaude} />}
+
+      {mode === "manual"
+        ? <Understood key={`manual-${manual}`} initial={emptyBrief()} jdText="" like="" open linkedIn={linkedIn} note="" onReset={() => pick("describe")} />
+        : read.brief && !reading && read.at !== dismissed && (
+          <Understood key={read.at} initial={read.brief} jdText={read.jdText ?? ""} like={read.like ?? ""} linkedIn={linkedIn}
+            note={read.usedClaude ? "" : claude && mode !== "boolean" && mode !== "similar" ? "Claude couldn't be reached, so a simpler keyword reader was used. Check the filters." : ""}
+            onReset={() => { setText(""); setDismissed(read.at); }} />
+        )}
     </>
   );
 }
 
-function BriefEditor({ initial, jdText, usedClaude }: { initial: Brief; jdText: string; usedClaude: boolean }) {
+type UnderstoodProps = { initial: Brief; jdText: string; like: string; linkedIn: boolean; note: string; open?: boolean; onReset(): void };
+
+/** What was understood, as filters and ranking criteria the recruiter can change, with the button that runs the search. */
+function Understood({ initial, jdText, like, linkedIn, note, open = false, onReset }: UnderstoodProps) {
   const [brief, setBrief] = useState<Brief>(initial);
-  const [extras, setExtras] = useState<Required<RoleExtras>>({ pay: initial.payRange ?? "", like: "", target: "", avoid: "" });
-  const [saving, startSaving] = useTransition();
-  const toggle = (i: number) => setBrief((b) => ({ ...b, criteria: b.criteria.map((c, j) => (j === i ? { ...c, importance: c.importance === "must" ? "nice" : "must" } : c)) }));
-  const remove = (i: number) => setBrief((b) => ({ ...b, criteria: b.criteria.filter((_, j) => j !== i) }));
-  const set = (k: keyof RoleExtras) => (e: React.ChangeEvent<HTMLInputElement>) => setExtras({ ...extras, [k]: e.target.value });
+  const [extras, setExtras] = useState<Required<RoleExtras>>({ pay: initial.payRange ?? "", like, target: "", avoid: "" });
+  const [editing, setEditing] = useState(open);
+  const [running, start] = useTransition();
+  const ready = isSearchable(brief);
+  const github = findableOnGithub(brief);
+  const run = () => start(() => createRole({ jdText, brief: { ...brief, title: brief.title.trim() || brief.jobTitles[0] || brief.criteria[0]?.label || "New search" }, extras }));
 
   return (
-    <section className="panel form-grid" aria-label="Brief">
-      <div className="step-title"><span className="step-n">2</span> Check what we understood <span className="hint">{usedClaude ? "(read by Claude)" : "(keyword reader)"}</span></div>
-      <input className="input" style={{ fontWeight: 600 }} value={brief.title} aria-label="Role title"
-        onChange={(e) => setBrief({ ...brief, title: e.target.value })} />
-      <div style={{ display: "grid", gap: 8 }}>
-        <p className="hint">Filled means must-have, dashed means nice to have. Click one to switch it: most job descriptions ask for more must-haves than the hiring manager really needs.</p>
-        <div className="chips">
-          {brief.criteria.map((c, i) => (
-            <span key={c.label + i} className={`chip ${c.importance}`}>
-              <button type="button" className="chip-text" onClick={() => toggle(i)} title="Switch between must-have and nice to have">{c.label}</button>
-              <button type="button" className="chip-x" onClick={() => remove(i)} aria-label={`Remove ${c.label}`}>×</button>
-            </span>
-          ))}
-          {brief.locations.map((l) => <span key={l} className="chip">{l}</span>)}
-          {brief.remoteOk && <span className="chip">Remote is fine</span>}
-        </div>
-        {brief.leftOut && <p className="hint">Left out: {brief.leftOut}.</p>}
-        {brief.workAuthorization && <p className="notice">It mentions work authorization (&ldquo;{brief.workAuthorization}&rdquo;). Unlisted never guesses anyone&apos;s visa status, so ask about it on your first call.</p>}
+    <section className="panel understood" aria-label="Filters">
+      <div className="sec-head">
+        <span className="label">{open ? "Your filters" : "Here's what I understood"}</span>
+        {!open && <button className="btn small" onClick={() => setEditing(!editing)} aria-expanded={editing}>{editing ? "Done editing" : "Edit filters"}</button>}
       </div>
+      <SearchSentence brief={brief} />
+      {note && <p className="hint">{note}</p>}
+      {editing && <FiltersForm brief={brief} extras={extras} onChange={setBrief} onExtras={setExtras} />}
 
-      <div className="step-title"><span className="step-n">3</span> What job descriptions don&apos;t say <span className="hint">(optional)</span></div>
-      <div className="two-col">
-        <label className="field">Pay range<input value={extras.pay} onChange={set("pay")} placeholder="e.g. $200k–$250k" /><span className="hint">Goes into your messages.</span></label>
-        <label className="field">Someone like the person you want<input value={extras.like} onChange={set("like")} placeholder="A GitHub profile link" /><span className="hint">The agent looks for people with similar work.</span></label>
-        <label className="field">Companies to look in<input value={extras.target} onChange={set("target")} placeholder="Company names, separated by commas" /><span className="hint">The agent searches these first.</span></label>
-        <label className="field">Companies to avoid<input value={extras.avoid} onChange={set("avoid")} placeholder="Company names, separated by commas" /><span className="hint">People working there are never shown.</span></label>
+      <div className="divider" />
+      <div>
+        <span className="label">Criteria to rank your matches</span>
+        <p className="hint">{brief.criteria.length ? "People who meet more of these come first." : "Optional. Add skills or tools and the people who have them come first."}</p>
       </div>
-      <div className="row">
-        <button className="btn primary" disabled={saving || !brief.criteria.length}
-          onClick={() => startSaving(() => createRole({ jdText, brief, extras }))}>
-          {saving ? "Creating the role and searching…" : "Create role and find candidates"}
-        </button>
-        {!brief.criteria.length && <span className="hint">Add at least one requirement to the job description first.</span>}
+      <CriteriaForm brief={brief} onChange={setBrief} />
+
+      {brief.leftOut && <p className="hint">Left out: {brief.leftOut}.</p>}
+      {brief.workAuthorization && <p className="notice">It mentions work authorization (&ldquo;{brief.workAuthorization}&rdquo;). Unlisted never guesses anyone&apos;s visa status, so ask about it on your first call.</p>}
+      {!linkedIn && !github && ready && (
+        <p className="notice">This search needs LinkedIn profiles, and they aren&apos;t connected yet, so it won&apos;t find anyone. Connect People Data Labs first: the steps are in <Link href="/app/settings">Settings</Link>.</p>
+      )}
+      {!linkedIn && github && <p className="hint">LinkedIn profiles aren&apos;t connected, so this searches GitHub only: people found through the code they&apos;ve published.</p>}
+
+      <div className="run-row">
+        <span className="hint">{linkedIn ? "Shows the first matches in a few seconds. Each LinkedIn profile found uses one People Data Labs credit, up to 10 per search." : ""}</span>
+        <div className="row">
+          {!open && <button className="btn" onClick={onReset} disabled={running}>Start over</button>}
+          <button className="btn primary" onClick={run} disabled={running || !ready}>{running ? "Searching…" : "Run search"}</button>
+        </div>
       </div>
+      {!ready && <p className="hint">Add a job title or one requirement to run the search.</p>}
     </section>
   );
 }

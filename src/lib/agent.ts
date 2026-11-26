@@ -1,13 +1,13 @@
 import "server-only";
 import type { Person, Prisma } from "@prisma/client";
 import { db } from "./db";
-import { splitList, type Brief, type RoleContext, type RoleRules } from "./brief";
+import { findableOnGithub, toBrief, splitList, type Brief, type RoleContext, type RoleRules } from "./brief";
 import { hasClaude } from "./claude";
 import { sendEmail } from "./email";
 import { GitHubError, searchRepos, searchUsers, type Repo } from "./github";
-import { PdlError, hasPdl, searchLinkedIn, type Role } from "./pdl";
+import { PdlError, hasPdl, searchLinkedIn, type PdlSearch, type Role } from "./pdl";
 import { fitLabel, shortLocation } from "./score";
-import { POSSIBLE, assess, loadGithubPerson, resetSearch, savePerson, toScorable } from "./search";
+import { BLOCKED_REASON, POSSIBLE, assess, loadGithubPerson, resetSearch, saveLinkedInPerson, toScorable } from "./search";
 import { agentToken } from "@/agent/token";
 
 /** What one run may use. The agent is told these and every tool enforces them. */
@@ -28,10 +28,13 @@ type Usage = { toolCalls?: number; lookups?: number; githubSearches?: number; pd
 // ---------- starting a run ----------
 
 /** Starts the agent for a role, unless one is already running. Returns the run, or why it couldn't start. */
-export async function startAgentRun(roleId: string, trigger: "manual" | "nightly"): Promise<{ runId?: string; paused?: boolean; message?: string }> {
+export async function startAgentRun(roleId: string, trigger: "manual" | "nightly"): Promise<{ runId?: string; paused?: boolean; uncalibrated?: boolean; message?: string }> {
   if (!hasClaude()) return { message: "Add an ANTHROPIC_API_KEY to let the agent search for you." };
-  const owner = await db.role.findUnique({ where: { id: roleId }, select: { user: { select: { agentPaused: true } } } });
+  const owner = await db.role.findUnique({ where: { id: roleId }, select: { calibratedAt: true, user: { select: { agentPaused: true } }, _count: { select: { runs: true } } } });
   if (!owner || owner.user.agentPaused) return { paused: true };
+  // The agent waits until the recruiter has reviewed the first candidates and finished calibrating.
+  // Roles the agent already searched before calibration existed count as calibrated.
+  if (!owner.calibratedAt && owner._count.runs === 0) return { uncalibrated: true };
   const active = await db.agentRun.findFirst({ where: { roleId, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - (LIMITS.minutes + 3) * 60_000) } } });
   if (active) return { runId: active.id };
   if (trigger === "manual") {
@@ -77,7 +80,8 @@ function describe(p: Person, brief: Brief, rules: RoleRules) {
     location: shortLocation(p.location),
     on_linkedin: p.hasLinkedIn,
     current_role: p.headline ? `${p.headline}${p.company ? ` at ${p.company}` : ""}` : undefined,
-    roles: sp.experience.slice(0, 3).map((r) => `${r.title}${r.company ? ` at ${r.company}` : ""}`),
+    roles: sp.experience.slice(0, 4).map((r) => `${r.title}${r.company ? ` at ${r.company}` : ""}${r.start ? ` (${r.start.slice(0, 4)} to ${r.current ? "now" : r.end?.slice(0, 4) ?? "?"})` : ""}`),
+    years_of_experience: sp.yearsExperience ?? undefined,
     skills: sp.skills.slice(0, 10),
     languages: Object.entries(sp.languages).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([l, n]) => `${l} (${n})`),
     repos: sp.topRepos.slice(0, 3).map((r) => ({ name: r.name, about: clip(r.description, 90), stars: r.stars })),
@@ -88,7 +92,7 @@ function describe(p: Person, brief: Brief, rules: RoleRules) {
       unknown: checks.filter((c) => c.status === "unknown").map((c) => c.label),
     },
     can_add: !blocked && (status === "review" || score >= POSSIBLE),
-    cannot_add_because: blocked === "company" ? "works at a company the recruiter said to avoid" : blocked ? "outside the role's area" : undefined,
+    cannot_add_because: blocked ? BLOCKED_REASON[blocked] : undefined,
   };
 }
 
@@ -96,7 +100,7 @@ export async function agentContext(runId: string) {
   const run = await db.agentRun.findUnique({ where: { id: runId }, include: { role: true } });
   if (!run) return null;
   const { role } = run;
-  const brief = role.brief as unknown as Brief;
+  const brief = toBrief(role.brief);
   const rules = (role.rules ?? {}) as RoleRules;
   const decided = await db.match.findMany({
     where: { roleId: role.id, status: { in: ["approved", "skipped"] } },
@@ -117,6 +121,11 @@ export async function agentContext(runId: string) {
   await db.agentRun.update({ where: { id: runId }, data: { status: "running", progress: "Reading the role" } });
   return {
     role: { title: role.title, summary: brief.summary, payRange: (role.context as RoleContext).pay ?? brief.payRange },
+    jobTitles: brief.jobTitles,
+    mustHaveWorkedAt: brief.companies,
+    minimumYearsOfExperience: brief.minYears ?? undefined,
+    titleWordsToAvoid: brief.exclude,
+    findableOnGithub: findableOnGithub(brief),
     mustHaves: brief.criteria.filter((c) => c.importance === "must").map((c) => c.label),
     niceToHaves: brief.criteria.filter((c) => c.importance === "nice").map((c) => c.label),
     locations: brief.locations, remoteOk: brief.remoteOk, excludedLocations: rules.excludedLocations ?? [],
@@ -205,7 +214,7 @@ async function lookAtPeopleTool(run: RunWithRole, input: Record<string, unknown>
   const logins = (Array.isArray(input.github_logins) ? input.github_logins : []).map(String).slice(0, 6);
   usage.lookups = (usage.lookups ?? 0) + logins.length;
   if (usage.lookups > LIMITS.lookups) return { progress: run.progress, result: { error: "You've looked at as many people as this run allows. Add the best ones you've seen, then finish." } };
-  const brief = run.role.brief as unknown as Brief;
+  const brief = toBrief(run.role.brief);
   const rules = (run.role.rules ?? {}) as RoleRules;
   const { optOutLogins } = await excludedPeople(run.roleId);
   const out = [];
@@ -225,25 +234,27 @@ async function searchLinkedInTool(run: RunWithRole, input: Record<string, unknow
   const size = Math.min(10, LIMITS.pdlProfiles - used);
   if (size <= 0) return { progress: run.progress, result: { error: "You've used all LinkedIn profiles for this run." } };
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String).filter(Boolean).slice(0, 8) : []);
-  const search = { title: String(input.title ?? "").slice(0, 80), skills: list(input.skills), cities: list(input.cities), remote: Boolean(input.remote), boost: list(input.boost), companies: list(input.companies) };
+  const brief = toBrief(run.role.brief);
+  const titles = [...list(input.titles), ...(input.title ? [String(input.title)] : [])].map((t) => t.slice(0, 80)).slice(0, 4);
+  // Employers the search requires are always applied, whatever the agent asks for.
+  const required = brief.companies.length > 0;
+  const search: PdlSearch = {
+    titles, skills: list(input.skills), places: list(input.cities), remote: Boolean(input.remote), boost: list(input.boost),
+    companies: required ? brief.companies : list(input.companies), pastCompanies: required || Boolean(input.past_companies),
+    minYears: Number(input.min_years) > 0 ? Number(input.min_years) : brief.minYears, exclude: brief.exclude,
+  };
   const found = await searchLinkedIn(search, size);
   usage.pdlProfiles = used + found.people.length;
-  const brief = run.role.brief as unknown as Brief;
   const rules = (run.role.rules ?? {}) as RoleRules;
   const { optOutLinks, optOutLogins } = await excludedPeople(run.roleId);
   const out = [];
   for (const lp of found.people) {
     if (optOutLinks.has(lp.linkedinUrl) || (lp.githubLogin && optOutLogins.has(lp.githubLogin.toLowerCase()))) continue;
-    const person = await savePerson({
-      source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name,
-      location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, email: lp.email, hasLinkedIn: true,
-      skills: json(lp.skills), experience: json(lp.experience), fetchedAt: new Date(),
-    });
-    out.push(describe(person, brief, rules));
+    out.push(describe(await saveLinkedInPerson(lp), brief, rules));
   }
   await db.agentRun.update({ where: { id: run.id }, data: { looked: { increment: out.length } } });
-  const where = search.companies.length ? ` at ${search.companies.join(", ")}` : search.cities.length && !search.remote ? ` in ${search.cities.join(", ")}` : "";
-  return { progress: `Searching LinkedIn: ${search.title || "people"}${where}`, result: { people: out } };
+  const where = search.companies?.length ? ` at ${search.companies.join(", ")}` : search.places.length && !search.remote ? ` in ${search.places.join(", ")}` : "";
+  return { progress: `Searching LinkedIn: ${titles.join(", ") || "people"}${where}`, result: { people: out } };
 }
 
 /** Everything in a person's profile the agent may cite: repository names, roles, companies, skills, languages. */
@@ -257,7 +268,7 @@ function citable(p: Person): string[] {
 
 async function addCandidatesTool(run: RunWithRole, input: Record<string, unknown>) {
   const items = (Array.isArray(input.candidates) ? input.candidates : []).slice(0, 5) as Record<string, unknown>[];
-  const brief = run.role.brief as unknown as Brief;
+  const brief = toBrief(run.role.brief);
   const rules = (run.role.rules ?? {}) as RoleRules;
   const results = [];
   let added = run.added;
@@ -268,7 +279,7 @@ async function addCandidatesTool(run: RunWithRole, input: Record<string, unknown
     if (!person) { results.push({ person_id: personId, added: false, reason: "No person with that id. Use person_id exactly as the tools returned it." }); continue; }
     if (added >= LIMITS.adds) { results.push({ person_id: personId, added: false, reason: "This run has added as many people as it may. Finish now." }); continue; }
     const { score, checks, status, blocked } = assess(person, brief, rules);
-    if (blocked) { results.push({ person_id: personId, added: false, reason: blocked === "company" ? "They work at a company the recruiter said to avoid." : "They're outside the role's area." }); continue; }
+    if (blocked) { results.push({ person_id: personId, added: false, reason: `This person ${BLOCKED_REASON[blocked]}.` }); continue; }
     if (status !== "review" && score < POSSIBLE) { results.push({ person_id: personId, added: false, reason: "Too weak a match against the brief's must-haves." }); continue; }
     // The safety check: every piece of evidence must be in their actual profile.
     const evidence = (Array.isArray(it.evidence) ? it.evidence : []).map(String).filter((e) => e.trim()).slice(0, 6);
@@ -326,7 +337,7 @@ export async function answerQuestion(roleId: string, questionId: string, yes: bo
   const questions = (role.questions ?? []) as Question[];
   const q = questions.find((x) => x.id === questionId && x.status === "open");
   if (!q) return;
-  const brief = yes ? applyChange(role.brief as unknown as Brief, q.change) : (role.brief as unknown as Brief);
+  const brief = yes ? applyChange(toBrief(role.brief), q.change) : toBrief(role.brief);
   await db.role.update({ where: { id: roleId }, data: { brief: json(brief), questions: json(questions.map((x) => (x.id === questionId ? { ...x, status: yes ? "yes" : "no" } : x))) } });
   if (yes) await resetSearch(roleId);
 }

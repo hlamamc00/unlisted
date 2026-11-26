@@ -1,15 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { linkedInHref } from "@/lib/linkedin";
 import { MAX_FOLLOW_UPS, STAGES, type Stage } from "@/lib/pipeline";
-import { fitLabel, fitLevel, type Check } from "@/lib/score";
+import { fitLabel, fitLevel } from "@/lib/score";
 import type { MessageKind, SkipReason } from "../../actions";
 import { Avatar, displayName } from "./avatar";
+import { FitChips, REASONS, Timeline, WhereAndLinks, mark } from "./candidate-card";
 import type { Item } from "./types";
 
-export const REASONS: [SkipReason, string][] = [["location", "Wrong location"], ["work", "Work isn't relevant"], ["known", "Already know them"], ["other", "Other"]];
-const mark = (s: Check["status"]) => (s === "yes" ? "✓" : s === "no" ? "✗" : "?");
 const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 const FOUND: Record<string, string> = { agent: "Found by the agent", you: "Added by you", pool: "Found earlier" };
 
@@ -27,30 +25,24 @@ type Props = {
   onNotes(text: string): void;
 };
 
-/** One candidate in full: how they fit, their work, and what to do next. In the pipeline it also shows stage, notes and messages. */
+/** One candidate in full: how they fit, their work, and what to do next. On the shortlist it also shows stage, notes and messages. */
 export function CandidateDetail({ item, position, skipOpen, setSkipOpen, onBack, onApprove, onSkip, onReview, onStage, onMessage, onNotes }: Props) {
   const { person } = item;
   const [notes, setNotes] = useState(item.notes);
   const inPipeline = item.status === "approved";
   const work = item.evidence.filter((e) => e.src === "GitHub").slice(0, 2);
-  const roles = item.evidence.filter((e) => e.src === "Role" || e.src === "Before").slice(0, 2);
   const sent = item.messages.length;
-  const links = [
-    person.login && <a href={`https://github.com/${person.login}`} target="_blank" rel="noreferrer">GitHub</a>,
-    person.linkedinUrl && <a href={linkedInHref(person.linkedinUrl)} target="_blank" rel="noreferrer">LinkedIn</a>,
-    person.blog && <a href={person.blog.startsWith("http") ? person.blog : `https://${person.blog}`} target="_blank" rel="noreferrer">Website</a>,
-  ].filter(Boolean);
 
   return (
     <>
-      <button className="back-link" onClick={onBack}>‹ All candidates</button>
+      <button className="back-link" onClick={onBack}>‹ Everyone</button>
 
       <div className="d-head">
         <Avatar person={person} />
         <div className="who">
           <h2>{displayName(person)}</h2>
           {person.headline && <p>{person.headline}{person.company ? ` at ${person.company}` : ""}</p>}
-          <p>{[person.location || "Location not given", ...links].map((x, i) => <span key={i}>{i > 0 && " · "}{x}</span>)}</p>
+          <WhereAndLinks person={person} />
           <div className="badges">
             {!person.hasLinkedIn && <span className="badge accent">Not on LinkedIn</span>}
             {person.hireable && <span className="badge good">Open to offers</span>}
@@ -77,11 +69,7 @@ export function CandidateDetail({ item, position, skipOpen, setSkipOpen, onBack,
         </div>
       )}
 
-      <div className="fitline" aria-label="How they fit">
-        {item.checks.map((c) => (
-          <span key={c.label} className={`fitchip ${c.status}`} title={[c.label, c.detail].filter(Boolean).join(": ")}>{mark(c.status)} {c.label}</span>
-        ))}
-      </div>
+      <FitChips checks={item.checks} />
 
       {item.note && (
         <div className="agent-note">
@@ -105,16 +93,16 @@ export function CandidateDetail({ item, position, skipOpen, setSkipOpen, onBack,
         </div>
       )}
 
+      {person.experience.length > 0 && (
+        <div className="work">
+          <div className="label">Experience</div>
+          <Timeline jobs={person.experience} />
+        </div>
+      )}
       {work.length > 0 && (
         <div className="work">
           <div className="label">Best work</div>
           <ul>{work.map((e) => <li key={e.text}>{e.text}</li>)}</ul>
-        </div>
-      )}
-      {!work.length && roles.length > 0 && (
-        <div className="work">
-          <div className="label">Experience</div>
-          <ul>{roles.map((e) => <li key={e.text}>{e.src === "Before" ? `Before: ${e.text}` : e.text}</li>)}</ul>
         </div>
       )}
 
@@ -151,9 +139,9 @@ export function CandidateDetail({ item, position, skipOpen, setSkipOpen, onBack,
       <div className="actionbar">
         <div className="skip-reasons">
           {item.status === "review" && (skipOpen
-            ? <><span className="hint">Why skip?</span>{REASONS.map(([r, label]) => <button key={r} onClick={() => onSkip(r)}>{label}</button>)}<button onClick={() => setSkipOpen(false)}>Cancel</button></>
-            : <button className="btn" onClick={() => setSkipOpen(true)}>Skip</button>)}
-          {item.status !== "review" && <button className="btn" onClick={onReview}>Move back to review</button>}
+            ? <><span className="hint">Why hide?</span>{REASONS.map(([r, label]) => <button key={r} onClick={() => onSkip(r)}>{label}</button>)}<button onClick={() => setSkipOpen(false)}>Cancel</button></>
+            : <button className="btn" onClick={() => setSkipOpen(true)}>Hide</button>)}
+          {item.status !== "review" && <button className="btn" onClick={onReview}>Move back to matches</button>}
         </div>
         <div className="row">
           {item.status !== "skipped" && (sent === 0
@@ -161,7 +149,7 @@ export function CandidateDetail({ item, position, skipOpen, setSkipOpen, onBack,
             : sent <= MAX_FOLLOW_UPS
               ? <button className="btn" onClick={() => onMessage("followup")}>Write follow-up</button>
               : <span className="hint">You&apos;ve followed up twice.</span>)}
-          {item.status === "review" && <button className="btn primary" onClick={onApprove}>Approve</button>}
+          {item.status === "review" && <button className="btn primary" onClick={onApprove}>Shortlist</button>}
         </div>
       </div>
     </>

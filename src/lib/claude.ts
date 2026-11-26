@@ -12,17 +12,24 @@ export const hasClaude = () => Boolean(process.env.ANTHROPIC_API_KEY);
 let client: Anthropic | null = null;
 const anthropic = () => (client ??= new Anthropic());
 
-const BRIEF_SYSTEM = `You turn a job description, or a few lines a recruiter wrote, into a search brief for finding candidates through their public work: GitHub repositories, papers and talks.
+const BRIEF_SYSTEM = `You turn what a recruiter gives you into a search brief for finding candidates in the US. The input is a job description, a few lines in their own words, or a one-line request such as "data analyst in alpharetta georgia from hp". Candidates are found two ways: through professional profiles (job title, employers, location, skills, work history) and, for people who publish code, through their GitHub repositories.
 
-- label: 1 to 3 words a busy recruiter can scan, e.g. "Rust", "Low latency", "Trading systems", "6+ years".
-- criteria: the requirements that matter for finding people. Mark "must" only for what is genuinely required. Job descriptions list more requirements than hiring managers need, so prefer "nice" when unsure. Leave out benefits, perks, the company description and legal text.
-- Never include criteria about age, sex, race, religion, national origin, disability or other protected characteristics, or proxies for them such as graduation year.
-- signals: lowercase words and short phrases that would appear in the repository names, descriptions, topics or bios of someone who meets the requirement.
-- languages: GitHub's names for programming languages, e.g. "Rust", "C++", "Python".
-- Seniority and years of experience can't be seen in public code: include them as criteria with empty signals and languages.
-- searchTerms: 2 to 4 short phrases to search GitHub repositories with.`;
+- title: the job's name as it would appear on a posting, e.g. "Data Analyst" or "Senior Rust Engineer, Trading Systems". No place and no employer.
+- jobTitles: 1 to 4 titles people in this job actually hold, the most likely first: the one asked for plus close variants, e.g. "Data Analyst", "Business Intelligence Analyst", "Reporting Analyst". For software roles include the general title, e.g. "Software Engineer". No seniority words such as Senior or Lead.
+- companies: employers the person must work at now or have worked at before, only when the recruiter asks for that ("from HP", "ex-Google", "who worked at Deloitte"). Use the name people put on their profile, and when a company is widely known by two names give both, e.g. "HP" and "Hewlett-Packard". The company that is hiring is never one of these.
+- minYears: the minimum years of experience when a number is stated, otherwise null. Don't repeat it in criteria.
+- locations: a city as "City, ST" with the two-letter state, e.g. "Alpharetta, GA"; a whole state by its name, e.g. "Texas". Empty when no place is given.
+- remoteOk: true only when remote work is offered or the recruiter says anywhere is fine.
+- criteria: the skills, tools, domains, licenses and certifications that matter for finding people. Mark "must" only for what is genuinely required: job descriptions list more requirements than hiring managers need, so prefer "nice" when unsure. A one-line request often has none, and you must not invent requirements the recruiter didn't mention. Leave out the job title itself, places, employers, years of experience, benefits, perks, the company description and legal text.
+- label: 1 to 3 words a busy recruiter can scan, e.g. "SQL", "Tableau", "Low latency", "RN license".
+- signals: lowercase words and short phrases that would appear in the skills, job titles, bios or repository names of someone who meets the requirement.
+- languages: GitHub's names for programming languages, e.g. "Rust", "C++", "Python". Empty when the requirement isn't a programming language.
+- Seniority can't be seen reliably: include it only when it's asked for, as a criterion with empty signals and languages.
+- exclude: words that rule someone out when they appear in their job title, only when the recruiter says so: "not managers" gives "manager". Otherwise empty.
+- searchTerms: for roles where people publish code, 2 to 4 short phrases to search GitHub repositories with, e.g. "order book". Empty for every other kind of role.
+- Never include criteria about age, sex, race, religion, national origin, disability or other protected characteristics, or proxies for them such as graduation year.`;
 
-/** Reads a job description into a brief. Returns null when Claude declines. */
+/** Reads a one-line request or a job description into a brief. Returns null when Claude declines. */
 export async function readBriefWithClaude(text: string): Promise<Brief | null> {
   const res = await anthropic().beta.messages.parse({
     model: MODEL,
@@ -30,7 +37,25 @@ export async function readBriefWithClaude(text: string): Promise<Brief | null> {
     ...FALLBACK,
     output_config: { effort: "low", format: betaZodOutputFormat(BriefSchema) },
     system: BRIEF_SYSTEM,
-    messages: [{ role: "user", content: `<job_description>\n${text}\n</job_description>` }],
+    messages: [{ role: "user", content: `<request>\n${text}\n</request>` }],
+  });
+  if (res.stop_reason === "refusal") return null;
+  return res.parsed_output ?? null;
+}
+
+const REFINE_SYSTEM = `${BRIEF_SYSTEM}
+
+You are now updating an existing brief. The recruiter gives an instruction such as "remote is fine", "must know Tableau", "only people who worked at Dell" or "5+ years". Return the complete updated brief: apply the instruction, keep everything it doesn't mention exactly as it is, and don't re-word existing labels.`;
+
+/** Applies a recruiter's plain-words change to a brief. Returns null when Claude declines. */
+export async function refineBriefWithClaude(brief: Brief, instruction: string): Promise<Brief | null> {
+  const res = await anthropic().beta.messages.parse({
+    model: MODEL,
+    max_tokens: 16000,
+    ...FALLBACK,
+    output_config: { effort: "low", format: betaZodOutputFormat(BriefSchema) },
+    system: REFINE_SYSTEM,
+    messages: [{ role: "user", content: `<brief>\n${JSON.stringify(brief)}\n</brief>\n<instruction>\n${instruction}\n</instruction>` }],
   });
   if (res.stop_reason === "refusal") return null;
   return res.parsed_output ?? null;

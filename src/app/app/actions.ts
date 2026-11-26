@@ -7,8 +7,11 @@ import { z } from "zod";
 import type { Person, Prisma } from "@prisma/client";
 import { requireUser, type CurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { BriefSchema, readBriefLocally, splitList, type Brief, type RoleContext, type RoleRules } from "@/lib/brief";
-import { draftMessageWithClaude, hasClaude, readBriefWithClaude } from "@/lib/claude";
+import {
+  BriefSchema, briefFromProfile, describeChange, isSearchable, readBooleanLocally, readBriefLocally, refineBriefLocally, splitList, toBrief,
+  type Brief, type RoleContext, type RoleRules,
+} from "@/lib/brief";
+import { draftMessageWithClaude, hasClaude, readBriefWithClaude, refineBriefWithClaude } from "@/lib/claude";
 import { canEmail, sendEmail } from "@/lib/email";
 import { GitHubError } from "@/lib/github";
 import { fileToText } from "@/lib/jd-file";
@@ -16,7 +19,10 @@ import { normalizeLinkedIn } from "@/lib/linkedin";
 import { PdlError, enrichLinkedIn, hasPdl } from "@/lib/pdl";
 import { MAX_FOLLOW_UPS, isStage, type Stage } from "@/lib/pipeline";
 import { evidenceFor } from "@/lib/score";
-import { assess, loadGithubPerson, markForRescore, matchFromPool, resetSearch, runSearch, savePerson, toScorable, type SearchResult } from "@/lib/search";
+import {
+  BLOCKED_REASON, assess, loadGithubPerson, markForRescore, matchFromPool, rescoreIfStale, resetSearch, runSearch, saveLinkedInPerson, toScorable,
+  type SearchResult,
+} from "@/lib/search";
 import { answerQuestion, startAgentRun, type Note } from "@/lib/agent";
 
 const MAX_JD_CHARS = 30_000;
@@ -27,29 +33,82 @@ const site = () => (process.env.APP_URL || process.env.URL || "").replace(/\/$/,
 
 // ---------- roles ----------
 
-export type ReadResult = { brief?: Brief; jdText?: string; usedClaude?: boolean; error?: string };
+/** How the recruiter said who they want: in their own words, a job description, a Boolean string, or a profile to find more like. */
+export type SearchMode = "describe" | "jd" | "boolean" | "similar";
+export type ReadResult = { brief?: Brief; jdText?: string; usedClaude?: boolean; like?: string; error?: string; at?: number };
 
-/** Reads a pasted or uploaded job description into a brief the recruiter can then adjust. */
-export async function readJobDescription(_prev: ReadResult, form: FormData): Promise<ReadResult> {
+const EXAMPLE = "data analyst in Atlanta who worked at HP";
+
+/** A person from their GitHub or LinkedIn profile link: from our store when we have them, otherwise fetched. */
+async function loadPersonByLink(link: string): Promise<{ person: Person } | { error: string }> {
+  const raw = link.trim();
+  if (!raw) return { error: "Paste a GitHub or LinkedIn profile link." };
+  const declined = { error: "This person asked not to be included, so they can't be used." };
+  try {
+    const linkedinUrl = normalizeLinkedIn(raw);
+    if (linkedinUrl) {
+      if (await db.optOut.findUnique({ where: { linkedinUrl } })) return declined;
+      const stored = await db.person.findUnique({ where: { linkedinUrl } });
+      if (stored) return { person: stored };
+      if (!hasPdl()) return { error: "Reading a LinkedIn profile needs People Data Labs connected (see Settings). A GitHub profile link works without it." };
+      const lp = await enrichLinkedIn(linkedinUrl);
+      return lp ? { person: await saveLinkedInPerson(lp) } : { error: "We couldn't find that LinkedIn profile." };
+    }
+    const login = raw.replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/^@/, "").split(/[/?#]/)[0];
+    if (!/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(login)) return { error: "That doesn't look like a GitHub or LinkedIn profile link." };
+    if (await db.optOut.findUnique({ where: { githubLogin: login.toLowerCase() } })) return declined;
+    const person = await loadGithubPerson(login);
+    return person ? { person } : { error: "We couldn't find that GitHub profile." };
+  } catch (e) {
+    if (e instanceof GitHubError || e instanceof PdlError) return { error: e.message };
+    throw e;
+  }
+}
+
+/**
+ * Reads what the recruiter typed, pasted or uploaded into a brief they can check before anything is
+ * searched: a one-line request, a job description, a Boolean string, or a profile to find more like.
+ */
+export async function readSearch(_prev: ReadResult, form: FormData): Promise<ReadResult> {
   await requireUser();
+  const mode = String(form.get("mode") ?? "describe") as SearchMode;
   let text = String(form.get("text") ?? "").trim();
   const file = form.get("file");
   if (file instanceof File && file.size > 0) {
     try { text = (await fileToText(file)).trim(); }
     catch (e) { return { error: e instanceof Error ? e.message : "That file couldn't be read. Paste the text instead." }; }
   }
-  if (text.length < 20) return { error: "Paste the job description, or write a few lines about who you need." };
+  const at = Date.now();
+
+  if (mode === "similar") {
+    const found = await loadPersonByLink(text);
+    if ("error" in found) return { error: found.error };
+    const p = found.person;
+    const languages = Object.entries(p.languages as Record<string, number>).sort((a, b) => b[1] - a[1]).map(([l]) => l);
+    const brief = briefFromProfile({ name: p.name ?? p.githubLogin, headline: p.headline, skills: p.skills as string[], languages });
+    if (!isSearchable(brief)) return { error: "There isn't enough on that profile to search from. Describe who you're looking for instead." };
+    return { brief, jdText: `People like ${text}`, like: text, usedClaude: false, at };
+  }
+
+  if (text.length < 3) return { error: mode === "boolean" ? 'Type a Boolean search, for example: ("data analyst" OR "BI analyst") AND SQL' : `Describe who you're looking for, for example: ${EXAMPLE}.` };
   if (text.length > MAX_JD_CHARS) return { error: "That's longer than a job description usually is. Paste just the role's description." };
 
+  if (mode === "boolean") {
+    const brief = readBooleanLocally(text);
+    return isSearchable(brief) ? { brief, jdText: text, usedClaude: false, at } : { error: "There's no job title or skill in that search. Put phrases in quotes and join them with AND, OR and NOT." };
+  }
   if (hasClaude()) {
     try {
-      const brief = await readBriefWithClaude(text);
-      if (brief) return { brief, jdText: text, usedClaude: true };
+      const read = await readBriefWithClaude(text);
+      const brief = read ? toBrief(read) : null;
+      if (brief && isSearchable(brief)) return { brief, jdText: text, usedClaude: true, at };
     } catch (e) {
-      console.error("Claude couldn't read the job description; using keywords instead", e);
+      console.error("Claude couldn't read the request; using keywords instead", e);
     }
   }
-  return { brief: readBriefLocally(text), jdText: text, usedClaude: false };
+  const brief = readBriefLocally(text);
+  if (!isSearchable(brief)) return { error: `I couldn't tell which job or skills you mean. Try something like: ${EXAMPLE}.` };
+  return { brief, jdText: text, usedClaude: false, at };
 }
 
 /** What a job description doesn't say: pay, an example person, companies to look in or stay away from. */
@@ -60,10 +119,14 @@ function contextFrom(extras: RoleExtras, brief: Brief): RoleContext {
   return { pay: clean(extras.pay, 100) || brief.payRange || undefined, like: clean(extras.like, 300), target: clean(extras.target, 300), avoid: clean(extras.avoid, 300) };
 }
 
-/** Saves a new role, matches people already found for other roles, runs the first search and starts the agent. */
+/**
+ * Saves a new search as a role, matches people already found for other roles and runs the first
+ * search. The agent waits until the recruiter has reviewed the first matches (see finishCalibrating).
+ */
 export async function createRole(input: { jdText: string; brief: Brief; extras: RoleExtras }) {
   const user = await requireUser();
   const brief = BriefSchema.parse(input.brief);
+  if (!isSearchable(brief)) throw new Error("Add a job title or a requirement first");
   const context = contextFrom(input.extras, brief);
   const role = await db.role.create({
     data: {
@@ -73,7 +136,7 @@ export async function createRole(input: { jdText: string; brief: Brief; extras: 
   });
   try { await matchFromPool(role.id); } catch (e) { console.error("Matching from the pool failed", e); }
   try { await runSearch(role.id, user.id); } catch (e) { console.error("First search failed", e); }
-  await startAgentRun(role.id, "manual").catch((e) => console.error("The agent didn't start", e));
+  revalidatePath("/app", "layout"); // the new search joins the sidebar
   redirect(`/app/roles/${role.id}`);
 }
 
@@ -83,6 +146,7 @@ export async function updateRole(roleId: string, input: { brief: Brief; extras: 
   const role = await db.role.findFirst({ where: { id: roleId, userId: user.id } });
   if (!role) throw new Error("Role not found");
   const brief = BriefSchema.parse(input.brief);
+  if (!isSearchable(brief)) throw new Error("Add a job title or a requirement first");
   const context = contextFrom(input.extras, brief);
   const rules = (role.rules ?? {}) as RoleRules;
   await db.role.update({
@@ -90,19 +154,69 @@ export async function updateRole(roleId: string, input: { brief: Brief; extras: 
     data: { title: brief.title.slice(0, 120) || role.title, brief: json(brief), context: json(context), rules: json({ ...rules, avoidCompanies: splitList(context.avoid) }) },
   });
   await resetSearch(roleId);
+  await rescoreIfStale(roleId, user.id);
   revalidatePath(`/app/roles/${roleId}`);
+}
+
+/**
+ * Changes a role's search in plain words ("only people who worked at Dell", "remote is fine"),
+ * re-scores the people already found and searches again with the change.
+ */
+export async function refineSearch(roleId: string, text: string): Promise<{ ok: boolean; message: string }> {
+  const user = await requireUser();
+  const role = await db.role.findFirst({ where: { id: roleId, userId: user.id } });
+  if (!role) throw new Error("Role not found");
+  const instruction = text.trim().slice(0, 500);
+  const help = "Try: remote is fine, must know Tableau, or only people who worked at Dell. Edit filters also works.";
+  if (instruction.length < 3) return { ok: false, message: `Say what to change. ${help}` };
+  const before = toBrief(role.brief);
+  let after: Brief | null = null;
+  if (hasClaude()) {
+    try { const read = await refineBriefWithClaude(before, instruction); after = read ? toBrief(read) : null; }
+    catch (e) { console.error("Claude couldn't change the search; using keywords instead", e); }
+  }
+  after ??= refineBriefLocally(before, instruction);
+  if (before.jobTitles.join("|") === after.jobTitles.join("|")) after.title = before.title; // the search keeps its name unless the job changes
+  const change = describeChange(before, after);
+  if (!change) return { ok: false, message: `I couldn't tell what to change. ${help}` };
+  if (!isSearchable(after)) return { ok: false, message: "That would leave nothing to search for. Keep a job title or at least one requirement." };
+
+  await db.role.update({ where: { id: roleId }, data: { title: after.title.slice(0, 120) || role.title, brief: json(after) } });
+  await resetSearch(roleId);
+  await rescoreIfStale(roleId, user.id);
+  let result: SearchResult;
+  try { result = await runSearch(roleId, user.id); }
+  catch (e) { console.error("Search failed", e); result = { added: 0, looked: 0, message: "The search couldn't finish." }; }
+  revalidatePath(`/app/roles/${roleId}`);
+  const found = result.added ? `Found ${result.added} more.` : result.message ?? "";
+  return { ok: true, message: `Changed: ${change}. ${found}`.trim() };
+}
+
+/**
+ * The recruiter has shortlisted and hidden enough of the first matches to show what they want. From
+ * here the agent may search for this role, when it's switched on.
+ */
+export async function finishCalibrating(roleId: string): Promise<{ started: boolean; paused: boolean; message?: string }> {
+  const user = await requireUser();
+  if (!(await db.role.findFirst({ where: { id: roleId, userId: user.id }, select: { id: true } }))) throw new Error("Role not found");
+  await db.role.update({ where: { id: roleId }, data: { calibratedAt: new Date() } });
+  const agent: Awaited<ReturnType<typeof startAgentRun>> = await startAgentRun(roleId, "manual")
+    .catch((e) => { console.error("The agent didn't start", e); return { message: "The agent couldn't start." }; });
+  revalidatePath(`/app/roles/${roleId}`);
+  return { started: Boolean(agent.runId), paused: Boolean(agent.paused), message: agent.message };
 }
 
 export type FindResult = SearchResult & { agent: { started: boolean; paused: boolean; message?: string } };
 
-/** The quick search (results in seconds), and the agent, which keeps working in the background for a few minutes. */
+/** More people with the same filters: the quick search (results in seconds), and the agent in the background when it's on. */
 export async function findCandidates(roleId: string): Promise<FindResult> {
   const user = await requireUser();
   if (!(await db.role.findFirst({ where: { id: roleId, userId: user.id }, select: { id: true } }))) throw new Error("Role not found");
   let result: SearchResult;
   try { result = await runSearch(roleId, user.id); }
   catch (e) { console.error("Search failed", e); result = { added: 0, looked: 0, message: "The quick search couldn't finish." }; }
-  const agent: Awaited<ReturnType<typeof startAgentRun>> = await startAgentRun(roleId, "manual")
+  // The agent joins in when Claude is connected, it's switched on, and the role is calibrated; otherwise it stays quiet.
+  const agent: Awaited<ReturnType<typeof startAgentRun>> = !hasClaude() ? {} : await startAgentRun(roleId, "manual")
     .catch((e) => { console.error("The agent didn't start", e); return { message: "The agent couldn't start." }; });
   revalidatePath(`/app/roles/${roleId}`);
   return { ...result, agent: { started: Boolean(agent.runId), paused: Boolean(agent.paused), message: agent.message } };
@@ -133,6 +247,7 @@ export async function setNightly(roleId: string, on: boolean) {
 export async function deleteRole(roleId: string) {
   const user = await requireUser();
   await db.role.deleteMany({ where: { id: roleId, userId: user.id } });
+  revalidatePath("/app", "layout");
   redirect("/app");
 }
 
@@ -141,54 +256,26 @@ export async function addPerson(roleId: string, link: string): Promise<{ ok: boo
   const user = await requireUser();
   const role = await db.role.findFirst({ where: { id: roleId, userId: user.id } });
   if (!role) throw new Error("Role not found");
-  const raw = link.trim();
-  if (!raw) return { ok: false, message: "Paste a GitHub or LinkedIn profile link." };
-  const declined = { ok: false, message: "This person asked not to be included, so they can't be added." };
-
-  let person: Person | null;
-  try {
-    const linkedinUrl = normalizeLinkedIn(raw);
-    if (linkedinUrl) {
-      if (await db.optOut.findUnique({ where: { linkedinUrl } })) return declined;
-      person = await db.person.findUnique({ where: { linkedinUrl } });
-      if (!person) {
-        if (!hasPdl()) return { ok: false, message: "Adding someone by LinkedIn link needs People Data Labs set up. Paste their GitHub link instead." };
-        const lp = await enrichLinkedIn(linkedinUrl);
-        if (!lp) return { ok: false, message: "We couldn't find that LinkedIn profile." };
-        person = await savePerson({
-          source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name, location: lp.location,
-          headline: lp.headline, company: lp.company, bio: lp.bio, email: lp.email, hasLinkedIn: true,
-          skills: json(lp.skills), experience: json(lp.experience), fetchedAt: new Date(),
-        });
-      }
-    } else {
-      const login = raw.replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/^@/, "").split(/[/?#]/)[0];
-      if (!/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(login)) return { ok: false, message: "That doesn't look like a GitHub or LinkedIn profile link." };
-      if (await db.optOut.findUnique({ where: { githubLogin: login.toLowerCase() } })) return declined;
-      person = await loadGithubPerson(login);
-      if (!person) return { ok: false, message: "We couldn't find that GitHub profile." };
-    }
-  } catch (e) {
-    if (e instanceof GitHubError || e instanceof PdlError) return { ok: false, message: e.message };
-    throw e;
-  }
+  const found = await loadPersonByLink(link);
+  if ("error" in found) return { ok: false, message: found.error };
+  const { person } = found;
 
   const name = person.name || person.githubLogin || "They";
   const existing = await db.match.findUnique({ where: { roleId_personId: { roleId, personId: person.id } } });
   if (existing && existing.status !== "filtered") {
-    const where = existing.status === "approved" ? "in your pipeline" : existing.status === "skipped" ? "in Skipped" : "waiting for review";
+    const where = existing.status === "approved" ? "on your shortlist" : existing.status === "skipped" ? "in Hidden" : "in your matches";
     return { ok: true, message: `${name} is already ${where} for this role.` };
   }
-  const { score, checks, blocked } = assess(person, role.brief as unknown as Brief, (role.rules ?? {}) as RoleRules);
+  const { score, checks, blocked } = assess(person, toBrief(role.brief), (role.rules ?? {}) as RoleRules);
   // The recruiter chose this person, so they're added either way, with a heads-up when a rule would have hidden them.
-  const headsUp = blocked === "company" ? " They work at a company on your avoid list." : blocked ? " They're outside this role's locations." : "";
+  const headsUp = blocked ? ` Note: this person ${BLOCKED_REASON[blocked]}.` : "";
   await db.match.upsert({
     where: { roleId_personId: { roleId, personId: person.id } },
     create: { roleId, personId: person.id, score, checks: json(checks), status: "review", foundBy: "you" },
     update: { score, checks: json(checks), status: "review", foundBy: "you" },
   });
   revalidatePath(`/app/roles/${roleId}`);
-  return { ok: true, message: `Added ${name} to review.${headsUp}` };
+  return { ok: true, message: `Added ${name} to your matches.${headsUp}` };
 }
 
 /** A link a hiring manager can open without an account to rate the shortlist. Lasts two weeks. */
@@ -283,7 +370,7 @@ const withoutFooter = (body: string) => body.split("\nIf you'd rather not hear a
 export async function draftMessage(matchId: string, kind: MessageKind = "first"): Promise<Draft> {
   const user = await requireUser();
   const match = await ownMatch(matchId, user.id);
-  const brief = match.role.brief as unknown as Brief;
+  const brief = toBrief(match.role.brief);
   const context = (match.role.context ?? {}) as RoleContext;
   const person = match.person;
   const sent = await db.message.findMany({ where: { matchId }, orderBy: { sentAt: "asc" } });

@@ -1,14 +1,18 @@
 import "server-only";
 import type { Person, Prisma } from "@prisma/client";
 import { db } from "./db";
-import type { Brief, RoleRules } from "./brief";
+import { findableOnGithub, toBrief, type Brief, type RoleRules } from "./brief";
 import { GitHubError, fetchProfile, searchRepoOwners, searchUsers, type Profile, type Repo } from "./github";
-import { PdlError, hasPdl, paramsFromBrief, searchLinkedIn, type Role } from "./pdl";
+import { PdlError, hasPdl, paramsFromBrief, searchLinkedIn, type LinkedInPerson, type Role } from "./pdl";
 import { scorePerson, type ScorablePerson } from "./score";
 
 type Query = { key: string; kind: "repos" | "users"; q: string };
 /** Pages read per query (-1 when a query has no more results) and people found but not yet looked at. */
-export type SearchState = { pages?: Record<string, number>; pending?: string[]; pdlScroll?: string | null; pdlDone?: boolean; pdlTotal?: number; v?: number };
+export type SearchState = {
+  pages?: Record<string, number>; pending?: string[]; pdlScroll?: string | null; pdlDone?: boolean; pdlTotal?: number; v?: number;
+  /** What the last search had to tell the recruiter, if anything. */
+  note?: string | null;
+};
 
 const BATCH = 12; // people looked at per run, so a run stays well inside a web request's time limit
 const MAX_SEARCHES = 3; // GitHub searches per run
@@ -16,12 +20,17 @@ const PDL_BATCH = 10; // LinkedIn profiles per run; each one costs a People Data
 export const MIN_SCORE = 60; // below this a person stays out of the queue
 export const POSSIBLE = 45; // the agent may add someone this strong, with its reasons
 /** Bump when scoring changes: each role re-scores its candidates the next time it's opened. */
-export const SCORE_VERSION = 4;
+export const SCORE_VERSION = 5;
 const FRESH_MS = 7 * 86_400_000; // reuse a fetched profile for a week
 const json = (v: unknown) => v as Prisma.InputJsonValue;
 
-/** GitHub searches for a brief: repositories about each search term, then people by language and city. */
+/**
+ * GitHub searches for a brief: repositories about each search term, then people by language and city.
+ * None when the people can't be found through code: other professions, or a required employer
+ * (GitHub profiles rarely say where someone has worked).
+ */
 export function buildQueries(brief: Brief): Query[] {
+  if (!findableOnGithub(brief)) return [];
   const lang =
     brief.criteria.find((c) => c.importance === "must" && c.languages.length)?.languages[0] ??
     brief.criteria.find((c) => c.languages.length)?.languages[0];
@@ -46,7 +55,7 @@ export function toScorable(p: Person): ScorablePerson & { followers: number; hir
     bio: p.bio, company: p.company, location: p.location, headline: p.headline, followers: p.followers, hireable: p.hireable,
     languages: p.languages as Record<string, number>, topRepos: p.topRepos as Repo[],
     totalStars: p.totalStars, lastPushAt: p.lastPushAt,
-    skills: p.skills as string[], experience: p.experience as Role[],
+    skills: p.skills as string[], experience: p.experience as Role[], yearsExperience: p.yearsExperience,
   };
 }
 
@@ -79,6 +88,17 @@ export async function savePerson(data: PersonFields): Promise<Person> {
   return db.person.update({ where: { id: target.id }, data: update as Prisma.PersonUpdateInput });
 }
 
+/** Saves a profile that came from People Data Labs. */
+export const saveLinkedInPerson = (lp: LinkedInPerson) =>
+  savePerson({
+    source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name,
+    location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, email: lp.email, hasLinkedIn: true,
+    skills: json(lp.skills), experience: json(lp.experience), yearsExperience: lp.yearsExperience, fetchedAt: new Date(),
+  });
+
+/** What to tell a recruiter whose search can only be answered from LinkedIn profiles when those aren't connected. */
+export const NEEDS_LINKEDIN = "This search needs LinkedIn profiles, and they aren't connected yet. Add a People Data Labs key (PDL_API_KEY) to your site's environment variables, then run the search again.";
+
 export type SearchResult = { added: number; looked: number; message?: string };
 
 /**
@@ -88,7 +108,7 @@ export type SearchResult = { added: number; looked: number; message?: string };
 export async function runSearch(roleId: string, userId: string): Promise<SearchResult> {
   const role = await db.role.findFirst({ where: { id: roleId, userId } });
   if (!role) throw new Error("Role not found");
-  const brief = role.brief as unknown as Brief;
+  const brief = toBrief(role.brief);
   const rules = (role.rules ?? {}) as RoleRules;
   const state = (role.searchState ?? {}) as SearchState;
   const pages = { ...(state.pages ?? {}) };
@@ -173,39 +193,46 @@ export async function runSearch(roleId: string, userId: string): Promise<SearchR
       for (const lp of found.people) {
         if (seenLinkedIn.has(lp.linkedinUrl) || (lp.githubLogin && seen.has(lp.githubLogin.toLowerCase()))) continue;
         seenLinkedIn.add(lp.linkedinUrl);
-        const person = await savePerson({
-          source: "linkedin", pdlId: lp.pdlId, linkedinUrl: lp.linkedinUrl, githubLogin: lp.githubLogin, name: lp.name,
-          location: lp.location, headline: lp.headline, company: lp.company, bio: lp.bio, email: lp.email, hasLinkedIn: true,
-          skills: json(lp.skills), experience: json(lp.experience), fetchedAt: new Date(),
-        });
-        await addMatch(person);
+        await addMatch(await saveLinkedInPerson(lp));
       }
     } catch (e) {
       if (!(e instanceof PdlError)) throw e;
       notes.push(e.message);
     }
   }
-  if (!batch.length && !queries.length && (pdlDone || !hasPdl())) notes.push("There are no more results for this brief. Edit the brief to search differently.");
+  if (!hasPdl() && !findableOnGithub(brief)) notes.push(NEEDS_LINKEDIN);
+  else if (!batch.length && !queries.length && (pdlDone || !hasPdl())) notes.push(looked ? "That's everyone this search finds. Change the filters to look further." : "No one new matches this search. Try widening the filters: fewer job titles or requirements, more places, or any employer.");
 
   await db.role.update({
     where: { id: roleId },
-    data: { searchState: json({ pages, pending: [...leftover, ...pending], pdlScroll, pdlDone, pdlTotal, v: SCORE_VERSION }), lastSearchAt: new Date() },
+    data: { searchState: json({ pages, pending: [...leftover, ...pending], pdlScroll, pdlDone, pdlTotal, v: state.v ?? SCORE_VERSION, note: notes.join(" ") || null }), lastSearchAt: new Date() },
   });
   return { added, looked, message: notes.length ? notes.join(" ") : undefined };
 }
 
+export type Blocked = "area" | "location" | "company" | "employer" | "excluded";
+/** Why someone can't be added, in words for the agent and the recruiter. */
+export const BLOCKED_REASON: Record<Blocked, string> = {
+  area: "outside the search's locations",
+  location: "in a place the recruiter ruled out",
+  company: "works at a company the recruiter said to avoid",
+  employer: "hasn't worked at any of the required employers",
+  excluded: "has a job title the recruiter ruled out",
+};
+
 /**
  * Score a person for a role and decide whether they belong in its queue. `blocked` says why someone
  * can't be shown whatever their score: outside the role's area, in a location the recruiter ruled
- * out, or working at a company the recruiter said to avoid.
+ * out, working at a company the recruiter said to avoid, never at an employer the search requires,
+ * or holding a job title the recruiter ruled out.
  */
 export function assess(person: Person, brief: Brief, rules: RoleRules, minScore = MIN_SCORE) {
-  const { score, checks, outOfArea } = scorePerson(toScorable(person), brief);
+  const { score, checks, outOfArea, missingEmployer, excluded: ruledOut } = scorePerson(toScorable(person), brief);
   const excluded = rules.excludedLocations?.some((x) => person.location?.toLowerCase().includes(x.toLowerCase()));
   const employers = [person.company, ...(person.experience as Role[]).filter((r) => r.current).map((r) => r.company)]
     .flatMap((c) => (c ? [c.toLowerCase()] : []));
   const avoided = rules.avoidCompanies?.some((a) => a.trim() && employers.some((e) => e.includes(a.trim().toLowerCase())));
-  const blocked = outOfArea ? ("area" as const) : excluded ? ("location" as const) : avoided ? ("company" as const) : null;
+  const blocked: Blocked | null = outOfArea ? "area" : excluded ? "location" : avoided ? "company" : missingEmployer ? "employer" : ruledOut ? "excluded" : null;
   return { score, checks, blocked, status: score >= minScore && !blocked ? "review" : "filtered" };
 }
 
@@ -231,7 +258,7 @@ export async function loadGithubPerson(login: string): Promise<Person | null> {
 export async function matchFromPool(roleId: string): Promise<number> {
   const role = await db.role.findUnique({ where: { id: roleId }, select: { brief: true, rules: true, matches: { select: { personId: true } } } });
   if (!role) return 0;
-  const brief = role.brief as unknown as Brief;
+  const brief = toBrief(role.brief);
   const rules = (role.rules ?? {}) as RoleRules;
   const have = new Set(role.matches.map((m) => m.personId));
   const people = await db.person.findMany({ orderBy: { fetchedAt: "desc" }, take: 3000 });
@@ -260,7 +287,7 @@ export async function rescoreIfStale(roleId: string, userId: string) {
   const role = await db.role.findFirst({ where: { id: roleId, userId }, select: { brief: true, rules: true, searchState: true } });
   const state = (role?.searchState ?? {}) as SearchState;
   if (!role || state.v === SCORE_VERSION) return;
-  const brief = role.brief as unknown as Brief;
+  const brief = toBrief(role.brief);
   const rules = (role.rules ?? {}) as RoleRules;
   const matches = await db.match.findMany({ where: { roleId, status: { in: ["review", "filtered"] } }, include: { person: true } });
   await db.$transaction([

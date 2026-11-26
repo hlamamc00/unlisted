@@ -2,15 +2,15 @@ import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 
 const STEPS = [
-  ["Upload the job description", "Unlisted pulls out the real requirements, then asks what job descriptions never say: the pay, companies to look in or avoid, and an example of who you want."],
-  ["Review people who fit", "An agent searches LinkedIn profiles and public work on GitHub, and adds people with the evidence for each one. You approve or skip, and it learns from every choice."],
+  ["Say who you need", "One line is enough: \u201cdata analyst in Atlanta who worked at HP\u201d. Or paste a job description, a Boolean string, or the profile of someone to find more like. Unlisted shows the filters it understood before anything is searched."],
+  ["Shortlist or hide", "Matches come as profile cards with their work history and how they fit, from LinkedIn profiles and from public work on GitHub. Shortlist the ones you'd contact, hide the rest, and the agent learns who you want."],
   ["Reach out and follow up", "Each message is written from that person's work and signed by you. Send it by email or paste it into LinkedIn. Reminders and a pipeline keep everyone moving."],
 ];
 
 const PILLARS = [
   ["People who aren't on LinkedIn", "Many strong engineers have no LinkedIn profile, or one they never update. Unlisted finds them through what they've built, next to the people who are on LinkedIn."],
   ["Evidence you can check", "Every candidate is checked off against your requirements, line by line. Anything the agent says about someone is verified against their real profile before you see it."],
-  ["An agent that asks before guessing", "Switch it on and it starts the moment you create a role, and can keep searching every night. When a choice would change the role, such as allowing remote, it asks you first."],
+  ["An agent that asks before guessing", "Switch it on and, once you've shortlisted a few people, it looks for more like them and can keep searching every night. When a choice would change the search, such as allowing remote, it asks you first."],
   ["Your hiring manager, one link away", "Share the shortlist with a link. They say yes or no without an account, and the search learns what they want."],
   ["A pipeline that reminds you", "Stages from first message to hire, private notes, follow-ups when someone hasn't replied, and a CSV export for your tracking system."],
   ["Respectful by design", "Matching never uses age, gender or other protected traits. You approve every message, and anyone can remove themselves at any time."],
@@ -31,7 +31,7 @@ export default function Home() {
           <div className="hero">
             <div className="label">For recruiters in the US</div>
             <h1>Find the candidates LinkedIn can&apos;t.</h1>
-            <p>Tell Unlisted who you need. An agent finds people on LinkedIn and people who aren&apos;t on it, shows you why each one fits, and writes a first message they&apos;ll want to answer.</p>
+            <p>Tell Unlisted who you need in one line. It finds people on LinkedIn and people who aren&apos;t on it, shows you why each one fits, and writes a first message they&apos;ll want to answer.</p>
             <div className="row">
               <Link href="/signup" className="btn primary">Create your account</Link>
               <Link href="/login" className="btn">Log in</Link>
@@ -57,7 +57,7 @@ export default function Home() {
               <p className="hint">Opening line: &ldquo;Your lockfree-orderbook project is close to what this team is building.&rdquo;</p>
             </div>
             <div className="preview-foot" aria-hidden="true">
-              <span className="btn small">Skip</span><span className="btn small">Write message</span><span className="btn small primary">Approve</span>
+              <span className="btn small">Hide</span><span className="btn small">Write message</span><span className="btn small primary">Shortlist</span>
             </div>
             <p className="hint">An example. Real candidates come with their own work and links.</p>
           </div>

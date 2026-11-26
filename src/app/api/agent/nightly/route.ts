@@ -7,7 +7,11 @@ export async function POST(req: Request) {
   if (!checkAgentToken("nightly", req.headers.get("authorization"))) return new Response("Unauthorized", { status: 401 });
   const since = new Date(Date.now() - 20 * 3_600_000);
   const roles = await db.role.findMany({
-    where: { nightly: true, user: { agentPaused: false }, runs: { none: { trigger: "nightly", createdAt: { gt: since } } } },
+    where: {
+      nightly: true, user: { agentPaused: false },
+      runs: { none: { trigger: "nightly", createdAt: { gt: since } } },
+      OR: [{ calibratedAt: { not: null } }, { runs: { some: {} } }], // only roles the recruiter has calibrated
+    },
     select: { id: true }, take: 50,
   });
   let started = 0;

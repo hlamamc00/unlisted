@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import type { Brief, RoleContext } from "@/lib/brief";
+import { filterSummary, toBrief, type RoleContext } from "@/lib/brief";
 import type { Feedback, Note } from "@/lib/agent";
 import { evidenceFor, shortLocation, type Check } from "@/lib/score";
 import { toScorable } from "@/lib/search";
@@ -26,7 +26,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
       </main>
     );
   }
-  const brief = role.brief as unknown as Brief;
+  const brief = toBrief(role.brief);
   const pay = ((role.context ?? {}) as RoleContext).pay || brief.payRange;
   const people: ShortlistPerson[] = role.matches.map((m) => {
     const evidence = evidenceFor(toScorable(m.person));
@@ -52,7 +52,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
         <p className="label">Shortlist from {role.user.name}{role.user.company ? `, ${role.user.company}` : ""}</p>
         <h1>{role.title}</h1>
         <p className="hint" style={{ marginTop: 6 }}>
-          {[...brief.criteria.filter((c) => c.importance === "must").slice(0, 4).map((c) => c.label), brief.locations.join(" or ") || "Anywhere in the US", pay].filter(Boolean).join(" · ")}
+          {filterSummary(brief, pay)}
         </p>
       </div>
       {people.length

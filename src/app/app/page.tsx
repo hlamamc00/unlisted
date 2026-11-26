@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import type { Brief } from "@/lib/brief";
+import { filterSummary, toBrief } from "@/lib/brief";
 import type { Question } from "@/lib/agent";
 import { STAGES, followUpDue } from "@/lib/pipeline";
 
@@ -24,14 +24,14 @@ export default async function TodayPage() {
 
   const now = Date.now();
   const cards = roles.map((r) => {
-    const brief = r.brief as unknown as Brief;
+    const brief = toBrief(r.brief);
     const approved = r.matches.filter((m) => m.status === "approved");
     const stages = Object.fromEntries(STAGES.map(([k]) => [k, approved.filter((m) => m.stage === k).length])) as Record<string, number>;
     const due = approved.filter((m) => followUpDue(m.stage, m.messages.map((x) => x.sentAt), now)).length;
     const run = r.runs[0];
     return {
       id: r.id, title: r.title, nightly: r.nightly, stages, due,
-      summary: [...brief.criteria.filter((c) => c.importance === "must").slice(0, 3).map((c) => c.label), brief.locations.length ? brief.locations.join(" or ") : "Anywhere in the US"].join(" · "),
+      summary: filterSummary(brief),
       toReview: r.matches.filter((m) => m.status === "review").length,
       waiting: Math.max(0, stages.contacted - due),
       questions: ((r.questions ?? []) as Question[]).filter((q) => q.status === "open").length,
@@ -43,7 +43,7 @@ export default async function TodayPage() {
   const total = (k: Key) => cards.reduce((sum, c) => sum + c[k], 0);
   const first = (k: Key) => cards.find((c) => c[k] > 0)?.id;
   const tiles: { label: string; key: Key; hint: string; tab?: string }[] = [
-    { label: "To review", key: "toReview", hint: "People waiting for your yes or no" },
+    { label: "To review", key: "toReview", hint: "Matches to shortlist or hide" },
     { label: "Follow-ups due", key: "due", hint: "Contacted, no reply yet", tab: "pipeline" },
     { label: "Waiting for replies", key: "waiting", hint: "Recently contacted", tab: "pipeline" },
     { label: "Questions for you", key: "questions", hint: "From the agent" },
@@ -54,16 +54,16 @@ export default async function TodayPage() {
       <div className="page-head">
         <div>
           <h1>Today</h1>
-          <p className="hint">{cards.length ? "What needs you, across your roles." : `Welcome, ${user.name.split(" ")[0]}.`}</p>
+          <p className="hint">{cards.length ? "What needs you, across your searches." : `Welcome, ${user.name.split(" ")[0]}.`}</p>
         </div>
-        <Link href="/app/roles/new" className="btn primary">New role</Link>
+        <Link href="/app/roles/new" className="btn primary">New search</Link>
       </div>
 
       {cards.length === 0 ? (
         <div className="panel empty-start">
-          <h2>Start with a job description</h2>
-          <p>Upload or paste it. Unlisted finds people on LinkedIn and people who aren&apos;t on it, shows why each one fits, and writes your first message.</p>
-          <Link href="/app/roles/new" className="btn primary">Create your first role</Link>
+          <h2>Say who you&apos;re looking for</h2>
+          <p>One line is enough, like &ldquo;data analyst in Atlanta who worked at HP&rdquo;, or paste a job description. Unlisted shows the filters it understood, finds people on LinkedIn and people who aren&apos;t on it, and writes your first message.</p>
+          <Link href="/app/roles/new" className="btn primary">Start your first search</Link>
         </div>
       ) : (
         <>
@@ -77,7 +77,7 @@ export default async function TodayPage() {
             })}
           </div>
 
-          <h2 className="section-title">Your roles</h2>
+          <h2 className="section-title">Your searches</h2>
           <div className="role-cards">
             {cards.map((c) => (
               <Link key={c.id} href={`/app/roles/${c.id}`} className="panel role-card">

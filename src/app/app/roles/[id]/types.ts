@@ -4,9 +4,13 @@ import type { Feedback, Note, Question } from "@/lib/agent";
 import type { Stage } from "@/lib/pipeline";
 import type { Check } from "@/lib/score";
 
+/** One job from someone's work history. `when` is "2019 – Present"; `match` marks a job title or employer the search asked for. */
+export type JobView = { title: string; company: string | null; when: string; match: boolean };
+
 export type PersonView = {
   login: string | null; linkedinUrl: string | null; headline: string | null; name: string | null; avatarUrl: string | null;
   location: string | null; company: string | null; email: string | null; blog: string | null; hasLinkedIn: boolean; hireable: boolean;
+  experience: JobView[];
 };
 
 export type Item = {
@@ -33,6 +37,12 @@ export type RoleView = {
   id: string; title: string; brief: Brief; context: RoleContext; excluded: string[];
   /** How many people match on LinkedIn, from the last search, when known. */
   linkedInTotal: number | null;
+  /** What the last search had to say, e.g. that there's no one left to find. */
+  searchNote: string | null;
+  /** LinkedIn profiles are connected (People Data Labs). */
+  linkedIn: boolean;
+  /** The recruiter has finished calibrating, so the agent may search for this role. */
+  calibrated: boolean;
   share: { path: string; expires: string } | null;
 };
 

@@ -25,16 +25,16 @@ export function AppNav({ userName, roles }: { userName: string; roles: NavRole[]
       <nav className={`side${open ? " open" : ""}`} aria-label="Main">
         <Link href="/app" className="brand"><Logo /> Unlisted</Link>
         <Link href="/app" className="side-link" aria-current={current("/app")}>Today</Link>
-        <Link href="/app/roles/new" className="btn primary side-new">New role</Link>
+        <Link href="/app/roles/new" className="btn primary side-new">New search</Link>
 
-        <div className="side-label">Roles</div>
+        <div className="side-label">Your searches</div>
         {roles.map((r) => (
           <Link key={r.id} href={`/app/roles/${r.id}`} className="side-link" aria-current={current(`/app/roles/${r.id}`)} title={r.title}>
             <span className="side-title">{r.title}</span>
             {r.toReview > 0 && <span className="side-count" title={`${r.toReview} to review`}>{r.toReview}</span>}
           </Link>
         ))}
-        {!roles.length && <p className="hint" style={{ padding: "2px 10px" }}>Your roles appear here.</p>}
+        {!roles.length && <p className="hint" style={{ padding: "2px 10px" }}>Your searches appear here.</p>}
 
         <div className="side-foot">
           <Link href="/app/settings" className="side-link" aria-current={current("/app/settings")}>Settings</Link>

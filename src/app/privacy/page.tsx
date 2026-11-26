@@ -17,7 +17,7 @@ export default function PrivacyPage() {
             <li>From your public GitHub profile: your name, username, photo, location, bio, company, website and public email, if you&apos;ve added them.</li>
             <li>Your public repositories: names, descriptions, topics, languages, stars and when you last pushed code.</li>
             <li>Whether your GitHub profile links to a LinkedIn profile, and its address.</li>
-            <li>From People Data Labs, a licensed provider of professional profile data: your name, job title, employer, location, skills, recent roles, LinkedIn profile address and, where they provide one, a contact email. We don&apos;t collect anything from LinkedIn ourselves.</li>
+            <li>From People Data Labs, a licensed provider of professional profile data: your name, job title, employer, location, skills, work history (job titles, employers and dates), an estimate of your years of work experience, LinkedIn profile address and, where they provide one, a contact email. We don&apos;t collect anything from LinkedIn ourselves.</li>
           </ul>
           <p>We never use or guess your age, gender, race, religion, national origin, disability or visa status, and we don&apos;t collect your education or graduation dates.</p>
           <h2>Why</h2>

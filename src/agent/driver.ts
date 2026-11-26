@@ -11,7 +11,8 @@ const SYSTEM = `You are a sourcing agent working for a recruiter in the US. Your
 
 How to work:
 - Start from the brief and from the people the recruiter approved and skipped. Look for more people like the ones they approved, and avoid what made them skip others.
-- Find people two ways: search_github finds people through what they've built (repositories) or by language and city (users); search_linkedin finds people with LinkedIn profiles, when it's available. Use both, so the list also includes strong people who aren't on LinkedIn.
+- Find people two ways: search_github finds people through what they've built (repositories) or by language and city (users); search_linkedin finds people with LinkedIn profiles, when it's available. When findableOnGithub is true use both, so the list also includes strong people who aren't on LinkedIn. When it's false (the job isn't about writing code, or people must come from named employers), use search_linkedin only.
+- jobTitles are the titles to search for; try the variants one or two at a time. mustHaveWorkedAt and minimumYearsOfExperience are applied to every LinkedIn search for you, and people who don't meet them can't be added.
 - Before adding someone from GitHub, look at them with look_at_people (up to 6 at a time). Profiles from search_linkedin already include what you need.
 - Add only people who genuinely fit, with add_candidates. For each, write why they fit in one or two sentences, and an opening line the recruiter could start a message with. Cite evidence exactly as the tools showed it: repository names, job titles, companies or skills. Never invent or embellish details; anything you can't cite, leave out.
 - If an add is rejected, read the reason and adjust; don't retry the same thing.
@@ -64,12 +65,14 @@ export async function runAgent({ site, runId, token }: { site: string; runId: st
       name: "search_linkedin",
       description: "Search people in the US with LinkedIn profiles, through a licensed data provider. Each person returned uses a credit, so search precisely. Returns full profiles with how they fit the brief.",
       inputSchema: z.object({
-        title: z.string().describe("Job title words, e.g. 'software engineer' or 'actuary'"),
-        skills: z.array(z.string()).max(4).describe("Skills they must list, e.g. ['rust']"),
-        cities: z.array(z.string()).max(4).describe("Cities to search in, e.g. ['Chicago']; ignored when remote is true"),
+        titles: z.array(z.string()).min(1).max(4).describe("Job titles, any of which may match, e.g. ['data analyst', 'business intelligence analyst']. A title matches when its words appear together in the person's current title, so prefer short ones such as 'engineer'."),
+        skills: z.array(z.string()).max(4).describe("Skills they must list, e.g. ['rust']. Leave empty unless the skill is essential: many profiles list few skills."),
+        cities: z.array(z.string()).max(4).describe("Places to search in, e.g. ['Chicago, IL'] or a whole state such as ['Texas']; ignored when remote is true"),
         remote: z.boolean().describe("true to search the whole US"),
         boost: z.array(z.string()).max(8).optional().describe("Skills that make someone a better match, e.g. ['low latency', 'trading']"),
-        companies: z.array(z.string()).max(8).optional().describe("Only people currently at these companies, e.g. the recruiter's target companies"),
+        companies: z.array(z.string()).max(8).optional().describe("Only people at these companies, e.g. the recruiter's target companies"),
+        past_companies: z.boolean().optional().describe("true to include people who used to work at those companies, not only people there now"),
+        min_years: z.number().int().min(1).max(40).optional().describe("Only people with at least this many years of experience"),
       }),
       run: (input) => call("search_linkedin", input),
     }),
@@ -81,7 +84,7 @@ export async function runAgent({ site, runId, token }: { site: string; runId: st
     }),
     betaZodTool({
       name: "add_candidates",
-      description: "Add people to the recruiter's review list. Each is checked: their location must fit, and every piece of evidence must appear in their profile.",
+      description: "Add people to the recruiter's review list. Each is checked: their location, employers and job title must fit the search, and every piece of evidence must appear in their profile.",
       inputSchema: z.object({
         candidates: z.array(z.object({
           person_id: z.string().describe("Exactly as a tool returned it"),
